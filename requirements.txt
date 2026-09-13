@@ -1,0 +1,6 @@
+requests>=2.31.0
+pytrends>=4.9.2
+pandas>=2.0.0
+cryptography>=42.0.0
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
