@@ -1,54 +1,127 @@
-<header>
+# Sales Agent — Marketplace Automation
 
-<!--
-  <<< Author notes: Course header >>>
-  Include a 1280×640 image, course title in sentence case, and a concise description in emphasis.
-  In your repository settings: enable template repository, add your 1280×640 social image, auto delete head branches.
-  Add your open source license, GitHub uses MIT license.
--->
+A Python service that automates day-to-day selling operations across
+Mercado Livre, Shopee and Amazon: pricing, order handling, policy
+compliance and data protection — with a human approval gate in front of
+every action that spends money.
 
-# GitHub Pages
-
-_Create a site or blog from your GitHub repositories with GitHub Pages._
-
-</header>
-
-<!--
-  <<< Author notes: Step 1 >>>
-  Choose 3-5 steps for your course.
-  The first step is always the hardest, so pick something easy!
-  Link to docs.github.com for further explanations.
-  Encourage users to open new tabs for steps!
--->
-
-## Step 1: Enable GitHub Pages
-
-_Welcome to GitHub Pages and Jekyll :tada:!_
-
-The first step is to enable GitHub Pages on this [repository](https://docs.github.com/en/get-started/quickstart/github-glossary#repository). When you enable GitHub Pages on a repository, GitHub takes the content that's on the main branch and publishes a website based on its contents.
-
-### :keyboard: Activity: Enable GitHub Pages
-
-1. Open a new browser tab, and work on the steps in your second tab while you read the instructions in this tab.
-1. Under your repository name, click **Settings**.
-1. Click **Pages** in the **Code and automation** section.
-1. Ensure "Deploy from a branch" is selected from the **Source** drop-down menu, and then select `main` from the **Branch** drop-down menu.
-1. Click the **Save** button.
-1. Wait about _one minute_ then refresh this page (the one you're following instructions from). [GitHub Actions](https://docs.github.com/en/actions) will automatically update to the next step.
-   > Turning on GitHub Pages creates a deployment of your repository. GitHub Actions may take up to a minute to respond while waiting for the deployment. Future steps will be about 20 seconds; this step is slower.
-   > **Note**: In the **Pages** of **Settings**, the **Visit site** button will appear at the top. Click the button to see your GitHub Pages site.
-
-<footer>
-
-<!--
-  <<< Author notes: Footer >>>
-  Add a link to get support, GitHub status page, code of conduct, license link.
--->
+Built with **FastAPI** and **SQLite**. Runs locally, operated from a
+keyboard-driven web panel.
 
 ---
 
-Get help: [Post in our discussion board](https://github.com/orgs/skills/discussions/categories/github-pages) &bull; [Review the GitHub status page](https://www.githubstatus.com/)
+## The problem
 
-&copy; 2023 GitHub &bull; [Code of Conduct](https://www.contributor-covenant.org/version/2/1/code_of_conduct/code_of_conduct.md) &bull; [MIT License](https://gh.io/mit)
+Marketplace sellers lose margin in three predictable ways:
 
-</footer>
+1. **Fee drift.** Marketplace commission tables change. A price that was
+   profitable last quarter quietly becomes a loss.
+2. **Policy strikes.** An automated listing or message that violates a
+   marketplace rule gets the account penalized or suspended.
+3. **Runaway automation.** A bot that can spend money without supervision
+   is a liability, not an asset.
+
+This project treats all three as design constraints rather than
+afterthoughts.
+
+---
+
+## What it does
+
+| Component | Responsibility |
+|---|---|
+| **Marketplace connectors** | OAuth-based integration layer for Mercado Livre, Shopee and Amazon. |
+| **Margin calculator** | Computes true net margin per item using the Mercado Livre 2026 fee tables. |
+| **Order state machine** | Models an order's lifecycle as explicit states and legal transitions, so an order can never land in an undefined status. |
+| **Approval queue** | Any action that spends money is queued for explicit human approval before it executes. Nothing financial happens unattended. |
+| **Compliance engine** | Validates outgoing actions against marketplace policy rules and blocks violations before they reach the API. |
+| **LGPD module** | Encrypts personally identifiable information at rest, in line with Brazil's General Data Protection Law (LGPD). |
+| **Web panel** | Local operations dashboard, fully keyboard-operable — no mouse required for routine work. |
+
+---
+
+## Design decisions
+
+**Human-in-the-loop by default.** The approval queue is not a feature
+flag. Actions with financial consequences are separated from actions
+without them at the architecture level, and only the former require a
+human to release them.
+
+**Fail closed on compliance.** The compliance engine rejects an action it
+cannot verify as policy-safe. A blocked legitimate action costs a few
+seconds; an account suspension costs the business.
+
+**Explicit state over implicit status.** Order status is a state machine
+with enumerated transitions, not a free-text column updated from several
+places.
+
+**Privacy as storage policy.** PII is encrypted at rest rather than
+filtered at display time, so a database copy is not a data leak.
+
+---
+
+## Quick start
+
+Requires Python and the dependencies listed in `requirements.txt`.
+
+**Windows**
+
+```bat
+iniciar.bat
+```
+
+**Linux / macOS**
+
+```bash
+./iniciar.sh
+```
+
+Then open the panel:
+
+```
+http://127.0.0.1:8777
+```
+
+---
+
+## Project status
+
+This is working software, run locally. It is honest about what has and
+has not been verified:
+
+| Area | Status |
+|---|---|
+| Core engine, margin calculation, order state machine | Working |
+| Approval queue, compliance engine, LGPD encryption | Working |
+| Web panel | Working |
+| Marketplace connectors (OAuth) | Implemented, **not yet verified against live marketplace APIs** |
+| Product & supplier registration | Currently via direct SQL — UI in progress |
+| Panel authentication | **Not yet implemented — run locally only, do not expose to a network** |
+
+### Roadmap
+
+- [ ] Product and supplier registration screens (replacing manual SQL)
+- [ ] Authentication for the web panel — required before any deployment
+- [ ] Live integration testing against each marketplace API
+
+---
+
+## Tech stack
+
+- **Python** — application and business logic
+- **FastAPI** — HTTP layer and web panel
+- **SQLite** — embedded persistence
+- **OAuth 2.0** — marketplace authentication
+
+---
+
+## Author
+
+**Gabriel Freire** — back-end developer (Java, Python, SQL)
+São Luís, Maranhão, Brazil
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).
