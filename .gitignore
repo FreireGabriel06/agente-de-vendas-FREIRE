@@ -98,3 +98,13 @@ log/
 ehthumbs.db
 Thumbs.db
 desktop.ini
+
+# ---------------------------------------------------------------
+# PROJECT RUNTIME FILES — kept from the original local .gitignore
+# ---------------------------------------------------------------
+# LGPD encryption key (Fernet). It decrypts buyer PII. Never commit.
+.chave_lgpd
+.token_ml.json
+.token_shopee.json
+ordens_de_compra/
+.primeira_execucao
