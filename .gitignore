@@ -26,7 +26,10 @@ settings.local.*
 *.db-shm
 *.sqlite
 *.sqlite3
+# SQL dumps can hold data; schema and migration scripts are code, so keep those tracked
 *.sql
+!schema.sql
+!**/migrations/*.sql
 dados/
 data/
 backups/
@@ -47,7 +50,7 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib60/
+lib64/
 parts/
 sdist/
 var/

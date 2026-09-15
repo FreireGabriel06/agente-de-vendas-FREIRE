@@ -124,7 +124,7 @@ def status() -> dict:
             "redirect_uri": os.getenv("ML_REDIRECT_URI") or redirect_padrao(),
             "passos": [
                 "No DevCenter, clique em Criar aplicação",
-                "Nome e nome curto: qualquer coisa única (ex.: agente-gabriel)",
+                "Nome e nome curto: qualquer coisa única (ex.: agente-vendas-teste)",
                 "Em 'URI de redirect', cole exatamente: {redirect}",
                 "Marque os escopos read, write e offline_access — sem o offline_access "
                 "você não recebe refresh token e a conexão morre em 6 horas",
