@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agente Comercial</title>
+<style>
+:root{
+  --papel:#EDF0EC; --papel-fundo:#E3E8E3; --tinta:#16211D; --tinta-fraca:#5A6А62;
+  --tinta-fraca:#59665F; --linha:#C3CDC6; --linha-forte:#96A69C;
+  --saldo:#14614A; --risco:#8C2F1B; --espera:#7A5D0F;
+  --realce:#D8E2D6;
+}
+*{box-sizing:border-box}
+html{font-size:16px}
+body{
+  margin:0; background:var(--papel-fundo); color:var(--tinta);
+  font-family:"Public Sans","Segoe UI",system-ui,sans-serif;
+  font-variant-numeric:tabular-nums; line-height:1.45;
+}
+.num{font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1}
+
+/* ---------- estrutura ---------- */
+header{
+  background:var(--papel); border-bottom:2px solid var(--linha-forte);
+  position:sticky; top:0; z-index:10;
+}
+.barra{
+  max-width:1180px; margin:0 auto; padding:.7rem 1.2rem;
+  display:flex; align-items:baseline; gap:1.6rem; flex-wrap:wrap;
+}
+.marca{font-weight:700; letter-spacing:-.01em; margin-right:auto}
+nav{display:flex; gap:.2rem}
+nav button{
+  background:none; border:0; border-bottom:2px solid transparent;
+  color:var(--tinta-fraca); font:inherit; padding:.35rem .7rem; cursor:pointer;
+}
+nav button[aria-current="true"]{color:var(--tinta); border-bottom-color:var(--saldo); font-weight:600}
+nav button:focus-visible,button:focus-visible,input:focus-visible{
+  outline:2px solid var(--saldo); outline-offset:2px
+}
+
+main{max-width:1180px; margin:0 auto; padding:1.6rem 1.2rem 5rem}
+section[hidden]{display:none}
+
+/* ---------- o número ---------- */
+.exposicao{margin:.5rem 0 2rem}
+.exposicao .cifra{
+  font-size:clamp(2.8rem,9vw,5rem); font-weight:300; letter-spacing:-.03em;
+  line-height:1; display:block;
+}
+.exposicao .glosa{color:var(--tinta-fraca); margin-top:.5rem; max-width:46ch}
+.exposicao .glosa strong{color:var(--tinta); font-weight:600}
+.bloqueio-aviso{
+  margin-top:.7rem; padding:.5rem .8rem; background:var(--papel);
+  border-left:3px solid var(--risco); color:var(--risco); font-size:.92rem;
+}
+
+/* ---------- razão ---------- */
+table{width:100%; border-collapse:collapse; background:var(--papel)}
+caption{text-align:left; padding:.6rem .9rem; color:var(--tinta-fraca); font-size:.9rem;
+  border:1px solid var(--linha); border-bottom:0}
+th{
+  text-align:left; font-size:.82rem; font-weight:600; color:var(--tinta-fraca);
+  padding:.45rem .9rem; border-bottom:1px solid var(--linha-forte);
+  background:var(--papel);
+}
+td{padding:.65rem .9rem; border-bottom:1px solid var(--linha); vertical-align:top}
+tbody tr:hover{background:var(--realce)}
+tbody tr[data-foco="1"]{background:var(--realce); box-shadow:inset 3px 0 0 var(--saldo)}
+tbody tr[data-bloqueado="1"]{background:#F2E9E6}
+tbody tr[data-bloqueado="1"]:hover{background:#EDE0DC}
+.dir{text-align:right}
+.marca-mp{font-size:.78rem; color:var(--tinta-fraca)}
+.verba{font-weight:600}
+.margem-boa{color:var(--saldo)} .margem-ruim{color:var(--risco)}
+
+.motivo{
+  margin-top:.45rem; padding:.5rem .7rem; background:#F7EFEC;
+  border-left:3px solid var(--risco); font-size:.88rem;
+}
+.motivo b{color:var(--risco)}
+.motivo .saida{display:block; margin-top:.25rem; color:var(--tinta-fraca)}
+
+/* ---------- ações ---------- */
+.acoes{display:flex; gap:.4rem; justify-content:flex-end}
+button.acao{
+  font:inherit; font-size:.88rem; padding:.35rem .8rem; cursor:pointer;
+  border:1px solid var(--linha-forte); background:var(--papel); color:var(--tinta);
+  min-height:34px;
+}
+button.acao:hover{background:var(--realce)}
+button.ok{border-color:var(--saldo); color:var(--saldo); font-weight:600}
+button.ok:hover{background:var(--saldo); color:var(--papel)}
+button.nao:hover{background:var(--risco); color:var(--papel); border-color:var(--risco)}
+button[disabled]{opacity:.4; cursor:not-allowed}
+.trancado{color:var(--risco); font-size:.85rem; font-weight:600; white-space:nowrap}
+
+/* ---------- ferramentas ---------- */
+.campo{display:flex; gap:.5rem; flex-wrap:wrap; margin-bottom:1rem}
+input[type=text],input[type=number]{
+  font:inherit; padding:.45rem .6rem; border:1px solid var(--linha-forte);
+  background:var(--papel); color:var(--tinta); min-height:38px;
+}
+.vazio{padding:2.5rem 1rem; background:var(--papel); border:1px solid var(--linha);
+  color:var(--tinta-fraca)}
+.vazio b{display:block; color:var(--tinta); font-size:1.05rem; margin-bottom:.3rem}
+
+/* ---------- conexões ---------- */
+.conexao{background:var(--papel); border:1px solid var(--linha); margin-bottom:1rem}
+.conexao > header{display:flex; align-items:center; gap:.8rem; padding:.8rem 1rem;
+  border-bottom:1px solid var(--linha); background:none; position:static}
+.conexao h2{margin:0; font-size:1.05rem; font-weight:600}
+.selo{font-size:.78rem; padding:.15rem .55rem; border:1px solid currentColor; margin-left:auto}
+.selo.pronto{color:var(--saldo)} .selo.parcial{color:var(--espera)} .selo.falta{color:var(--tinta-fraca)}
+.conexao .miolo{padding:1rem}
+.conexao ol{margin:0 0 1rem; padding-left:1.3rem; color:var(--tinta-fraca); font-size:.92rem}
+.conexao ol li{margin-bottom:.3rem}
+.conexao ol code{background:var(--realce); padding:.1rem .35rem; word-break:break-all;
+  color:var(--tinta); font-family:inherit; font-size:.92em}
+.conexao .linha-campos{display:flex; gap:.5rem; flex-wrap:wrap; margin-bottom:.8rem}
+.conexao input{flex:1; min-width:14rem}
+.teste{margin-top:.7rem; padding:.5rem .7rem; font-size:.9rem; border-left:3px solid}
+.teste.bom{border-color:var(--saldo); color:var(--saldo); background:#E8F0EA}
+.teste.ruim{border-color:var(--risco); color:var(--risco); background:#F7EFEC}
+
+
+#desfazer{
+  position:fixed; left:50%; bottom:1.5rem; transform:translateX(-50%);
+  background:var(--tinta); color:var(--papel); padding:.7rem 1rem;
+  display:flex; gap:1rem; align-items:center; box-shadow:0 4px 16px rgba(0,0,0,.25);
+}
+#desfazer[hidden]{display:none}
+#desfazer button{background:none;border:1px solid var(--papel);color:var(--papel);
+  font:inherit;padding:.25rem .7rem;cursor:pointer}
+
+.atalhos{margin-top:1.4rem; color:var(--tinta-fraca); font-size:.85rem}
+kbd{background:var(--papel); border:1px solid var(--linha-forte); padding:.05rem .35rem;
+  font-family:inherit; font-size:.85em}
+
+@media (max-width:640px){
+  .esconde-mobile{display:none}
+  td,th{padding:.55rem .6rem}
+  .acoes{flex-direction:column}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="barra">
+    <span class="marca">Agente Comercial</span>
+    <nav>
+      <button data-aba="fila" aria-current="true">Fila</button>
+      <button data-aba="pedidos">Pedidos</button>
+      <button data-aba="nichos">Nichos</button>
+      <button data-aba="preco">Preço</button>
+      <button data-aba="lgpd">LGPD</button>
+      <button data-aba="eventos">Eventos</button>
+      <button data-aba="config">Conexões</button>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<!-- ================= FILA ================= -->
+<section id="fila">
+  <div class="exposicao">
+    <span class="cifra num" id="cifra">—</span>
+    <p class="glosa" id="glosa">Carregando.</p>
+    <p class="bloqueio-aviso" id="aviso-bloqueio" hidden></p>
+  </div>
+
+  <table>
+    <caption>Decisões pendentes</caption>
+    <thead>
+      <tr>
+        <th style="width:3.2rem">#</th>
+        <th>O que</th>
+        <th class="dir" style="width:7rem">Valor</th>
+        <th class="dir esconde-mobile" style="width:5.5rem">Margem</th>
+        <th class="dir" style="width:12rem">Decisão</th>
+      </tr>
+    </thead>
+    <tbody id="corpo-fila"></tbody>
+  </table>
+
+  <p class="atalhos">
+    <kbd>j</kbd> <kbd>k</kbd> anda na lista · <kbd>a</kbd> aprova ·
+    <kbd>r</kbd> recusa · <kbd>c</kbd> roda um ciclo agora
+  </p>
+</section>
+
+<!-- ================= PEDIDOS ================= -->
+<section id="pedidos" hidden>
+  <table>
+    <caption>Últimos pedidos</caption>
+    <thead><tr>
+      <th>Pedido</th><th class="esconde-mobile">Canal</th>
+      <th class="dir">Valor</th><th class="dir esconde-mobile">Margem</th><th>Estado</th>
+    </tr></thead>
+    <tbody id="corpo-pedidos"></tbody>
+  </table>
+</section>
+
+<!-- ================= NICHOS ================= -->
+<section id="nichos" hidden>
+  <div class="campo">
+    <input type="text" id="termos" size="46"
+           placeholder="mochila notebook, suporte celular carro" aria-label="Termos separados por vírgula">
+    <button class="acao ok" id="btn-nichos">Analisar</button>
+  </div>
+  <table>
+    <caption>Demanda alta com concorrência baixa é onde dá pra entrar</caption>
+    <thead><tr>
+      <th>Termo</th><th class="dir">Demanda</th><th class="dir">Curva</th>
+      <th class="dir">Anúncios</th><th class="dir">Mediana</th><th class="dir">Score</th>
+    </tr></thead>
+    <tbody id="corpo-nichos"><tr><td colspan="6" class="vazio">
+      <b>Nada analisado ainda</b>Digite termos acima. A consulta leva um tempo — o Google Trends limita a taxa.
+    </td></tr></tbody>
+  </table>
+</section>
+
+<!-- ================= PREÇO ================= -->
+<section id="preco" hidden>
+  <div class="campo">
+    <input type="number" id="p-custo" step="0.01" placeholder="Custo" aria-label="Custo do produto">
+    <input type="number" id="p-margem" step="1" value="25" placeholder="Margem %" aria-label="Margem alvo">
+    <input type="number" id="p-peso" step="0.1" value="0.3" placeholder="Peso kg" aria-label="Peso em kg">
+    <button class="acao ok" id="btn-preco">Calcular</button>
+  </div>
+  <table>
+    <caption>Decomposição da venda</caption>
+    <tbody id="corpo-preco"><tr><td class="vazio">
+      <b>Informe o custo</b>O cálculo já considera o degrau dos R$ 79 e testa os dois lados.
+    </td></tr></tbody>
+  </table>
+</section>
+
+<!-- ================= LGPD ================= -->
+<section id="lgpd" hidden>
+  <div class="exposicao">
+    <span class="cifra num" id="lgpd-cifra" style="font-size:clamp(2rem,6vw,3.2rem)">—</span>
+    <p class="glosa" id="lgpd-glosa"></p>
+  </div>
+  <div class="campo"><button class="acao" id="btn-expurgo">Expurgar dados vencidos</button></div>
+  <table>
+    <caption>Acessos a dado pessoal registrados</caption>
+    <thead><tr><th>Quando</th><th>Operação</th><th>Por</th><th>Finalidade</th></tr></thead>
+    <tbody id="corpo-lgpd"></tbody>
+  </table>
+</section>
+
+<!-- ================= CONEXÕES ================= -->
+<section id="config" hidden>
+  <p class="glosa" style="margin:.3rem 0 1.6rem;max-width:60ch">
+    Sua senha é digitada no site do marketplace, nunca aqui. O que você cola
+    abaixo são chaves de aplicação — públicas no sentido de que identificam o
+    app, não você.
+  </p>
+  <div id="lista-config"></div>
+</section>
+
+<!-- ================= EVENTOS ================= -->
+<section id="eventos" hidden>
+  <table>
+    <caption>Últimos eventos do sistema</caption>
+    <thead><tr><th>Hora</th><th>Nível</th><th>Origem</th><th>Mensagem</th></tr></thead>
+    <tbody id="corpo-eventos"></tbody>
+  </table>
+</section>
+
+</main>
+
+<div id="desfazer" hidden>
+  <span id="desfazer-texto"></span>
+  <button id="btn-desfazer">Desfazer</button>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const brl = v => (v ?? 0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+let fila = [], foco = 0, abaAtiva = 'fila';
+
+/* ---------- navegação ---------- */
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
+  abaAtiva = b.dataset.aba;
+  document.querySelectorAll('nav button').forEach(o =>
+    o.setAttribute('aria-current', String(o === b)));
+  document.querySelectorAll('main section').forEach(s => s.hidden = s.id !== abaAtiva);
+  if (abaAtiva === 'pedidos') carregarPedidos();
+  if (abaAtiva === 'lgpd') carregarLgpd();
+  if (abaAtiva === 'config') carregarConfig();
+  if (abaAtiva === 'eventos') carregarEventos();
+});
+
+/* ---------- fila ---------- */
+async function carregarFila(){
+  const d = await (await fetch('/api/pendencias')).json();
+  fila = d.itens;
+  $('#cifra').textContent = brl(d.exposicao);
+
+  if (d.total === 0){
+    $('#glosa').innerHTML = 'Nada esperando você. O robô segue rodando sozinho.';
+  } else {
+    const liberadas = d.total - d.bloqueadas;
+    $('#glosa').innerHTML = `exposto em <strong>${liberadas}</strong> decisão(ões) liberada(s).`;
+  }
+  const aviso = $('#aviso-bloqueio');
+  aviso.hidden = d.bloqueadas === 0;
+  if (d.bloqueadas) aviso.textContent =
+    `${d.bloqueadas} item(ns) bloqueado(s) pela conformidade. Resolva a causa — não há como aprovar por cima.`;
+
+  if (!fila.length){
+    $('#corpo-fila').innerHTML = `<tr><td colspan="5" class="vazio">
+      <b>Fila limpa</b>Quando chegar pedido novo, ele aparece aqui já com margem calculada.</td></tr>`;
+    return;
+  }
+  foco = Math.min(foco, fila.length - 1);
+  $('#corpo-fila').innerHTML = fila.map((i, n) => {
+    const m = i.margem;
+    const margem = m == null ? '—'
+      : `<span class="${m < 0 ? 'margem-ruim' : 'margem-boa'}">${m}%</span>`;
+    const motivos = i.violacoes.map(v => `<div class="motivo">
+        <b>${esc(v.regra)}</b> — ${esc(v.mensagem)}
+        <span class="saida">Saída: ${esc(v.saida)} <em>(${esc(v.fonte)})</em></span></div>`).join('');
+    const decisao = i.bloqueado
+      ? `<span class="trancado">Bloqueado</span>`
+      : `<div class="acoes">
+           <button class="acao ok" onclick="aprovar(${i.id})">Aprovar</button>
+           <button class="acao nao" onclick="recusar(${i.id})">Recusar</button></div>`;
+    return `<tr data-foco="${n===foco?1:0}" data-bloqueado="${i.bloqueado?1:0}" data-id="${i.id}">
+      <td class="num">${i.id}</td>
+      <td>${esc(i.resumo)}${i.marketplace?`<div class="marca-mp">${esc(i.marketplace)}</div>`:''}${motivos}</td>
+      <td class="dir num verba">${i.valor ? brl(i.valor) : '—'}</td>
+      <td class="dir num esconde-mobile">${margem}</td>
+      <td class="dir">${decisao}</td></tr>`;
+  }).join('');
+}
+
+/* ---------- decisões ---------- */
+let pendenteDesfazer = null;
+
+async function aprovar(id){
+  const item = fila.find(i => i.id === id);
+  if (!item || item.bloqueado) return;
+
+  if (!item.reversivel){
+    // Compra gasta dinheiro: confirmação explícita, sem desfazer.
+    if (!confirm(`Confirmar: ${item.resumo}\n\nIsso envia a ordem ao fornecedor.`)) return;
+    return executarAprovacao(id);
+  }
+  // Reversível: executa já e oferece desfazer por 6s.
+  mostrarDesfazer(`Aprovado: ${item.resumo.slice(0,50)}`, () => { pendenteDesfazer = null; });
+  pendenteDesfazer = id;
+  setTimeout(() => { if (pendenteDesfazer === id){ pendenteDesfazer = null; executarAprovacao(id); } }, 6000);
+}
+
+async function executarAprovacao(id){
+  const r = await fetch(`/api/aprovar/${id}`, {method:'POST'});
+  if (!r.ok){ const e = await r.json().catch(()=>({detail:'falhou'}));
+    alert('Não deu pra aprovar: ' + (e.detail || r.status)); }
+  esconderDesfazer(); carregarFila();
+}
+
+async function recusar(id){
+  const motivo = prompt('Motivo da recusa (opcional):') ?? '';
+  await fetch(`/api/recusar/${id}`, {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({motivo})});
+  carregarFila();
+}
+
+function mostrarDesfazer(texto, aoDesfazer){
+  $('#desfazer-texto').textContent = texto;
+  $('#desfazer').hidden = false;
+  $('#btn-desfazer').onclick = () => { aoDesfazer(); esconderDesfazer(); carregarFila(); };
+}
+function esconderDesfazer(){ $('#desfazer').hidden = true; }
+
+/* ---------- teclado ---------- */
+document.addEventListener('keydown', e => {
+  if (abaAtiva !== 'fila' || /^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return;
+  const atual = fila[foco];
+  if (e.key === 'j' || e.key === 'ArrowDown'){ foco = Math.min(foco+1, fila.length-1); marcarFoco(); e.preventDefault(); }
+  else if (e.key === 'k' || e.key === 'ArrowUp'){ foco = Math.max(foco-1, 0); marcarFoco(); e.preventDefault(); }
+  else if (e.key === 'a' && atual && !atual.bloqueado){ aprovar(atual.id); }
+  else if (e.key === 'r' && atual){ recusar(atual.id); }
+  else if (e.key === 'c'){ rodarCiclo(); }
+});
+function marcarFoco(){
+  document.querySelectorAll('#corpo-fila tr').forEach((tr,n) => tr.dataset.foco = n===foco?1:0);
+  document.querySelector('#corpo-fila tr[data-foco="1"]')?.scrollIntoView({block:'nearest'});
+}
+
+async function rodarCiclo(){
+  $('#glosa').textContent = 'Rodando um ciclo…';
+  await fetch('/api/ciclo', {method:'POST'});
+  carregarFila();
+}
+
+/* ---------- outras abas ---------- */
+async function carregarPedidos(){
+  const d = await (await fetch('/api/pedidos')).json();
+  $('#corpo-pedidos').innerHTML = d.pedidos.length ? d.pedidos.map(p => {
+    const crit = d.criticos.includes(p.estado);
+    return `<tr><td class="num">${esc(p.id_externo)}</td>
+      <td class="esconde-mobile marca-mp">${esc(p.marketplace)}</td>
+      <td class="dir num">${brl(p.valor_bruto)}</td>
+      <td class="dir num esconde-mobile ${p.margem_prevista<0?'margem-ruim':'margem-boa'}">${p.margem_prevista ?? '—'}</td>
+      <td style="color:${crit?'var(--risco)':'inherit'}">${esc(p.estado)}</td></tr>`;
+  }).join('') : `<tr><td colspan="5" class="vazio"><b>Sem pedidos</b>Rode um ciclo pra buscar nos marketplaces.</td></tr>`;
+}
+
+$('#btn-nichos').onclick = async () => {
+  const termos = $('#termos').value.split(',').map(s=>s.trim()).filter(Boolean);
+  if (!termos.length) return;
+  $('#corpo-nichos').innerHTML = `<tr><td colspan="6" class="vazio">Consultando…</td></tr>`;
+  const d = await (await fetch('/api/nichos',{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify({termos})})).json();
+  $('#corpo-nichos').innerHTML = d.oportunidades.map(o => `<tr>
+    <td>${esc(o.termo)}</td><td class="dir num">${o.demanda}</td>
+    <td class="dir num ${o.tendencia<0?'margem-ruim':'margem-boa'}">${o.tendencia>0?'+':''}${o.tendencia}%</td>
+    <td class="dir num">${o.concorrencia.toLocaleString('pt-BR')}</td>
+    <td class="dir num">${brl(o.preco)}</td>
+    <td class="dir num verba">${o.score}</td></tr>`).join('');
+};
+
+$('#btn-preco').onclick = async () => {
+  const corpo = {custo:+$('#p-custo').value, margem:+$('#p-margem').value, peso:+$('#p-peso').value};
+  if (!corpo.custo) return;
+  const d = await (await fetch('/api/preco',{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify(corpo)})).json();
+  const linha = (r,v,forte) => `<tr><td>${r}</td><td class="dir num ${forte||''}">${brl(v)}</td></tr>`;
+  $('#corpo-preco').innerHTML =
+    `<tr><th>Preço sugerido</th><th class="dir num verba" style="font-size:1.2rem">${brl(d.preco_venda)}</th></tr>`
+    + linha('Custo do produto', -d.custo_produto) + linha('Comissão', -d.comissao)
+    + linha('Custo por unidade', -d.custo_unidade) + linha('Frete', -d.frete)
+    + linha('Imposto', -d.imposto)
+    + `<tr><td><b>Sobra pra você</b></td><td class="dir num verba margem-boa">${brl(d.lucro_liquido)} (${d.margem_pct}%)</td></tr>`
+    + (d.alerta ? `<tr><td colspan="2"><div class="motivo">${esc(d.alerta)}</div></td></tr>` : '');
+};
+
+async function carregarLgpd(){
+  const d = await (await fetch('/api/lgpd')).json();
+  $('#lgpd-cifra').textContent = d.registros_com_pii;
+  $('#lgpd-glosa').innerHTML =
+    `pedido(s) guardam dado pessoal de comprador, criptografado em repouso.<br>
+     Base legal: ${esc(d.base_legal)}. Retenção: ${d.retencao_dias} dias.`;
+  $('#corpo-lgpd').innerHTML = d.acessos.length ? d.acessos.map(a => `<tr>
+    <td class="num">${esc(a.ocorrido_em.slice(0,16).replace('T',' '))}</td>
+    <td>${esc(a.operacao)}</td><td>${esc(a.ator)}</td><td>${esc(a.finalidade)}</td></tr>`).join('')
+    : `<tr><td colspan="4" class="vazio"><b>Nenhum acesso registrado</b>Toda leitura de dado de comprador aparece aqui.</td></tr>`;
+}
+$('#btn-expurgo').onclick = async () => {
+  if (!confirm('Apagar dado pessoal de pedidos fora do prazo de retenção?\nO registro contábil é mantido.')) return;
+  const d = await (await fetch('/api/lgpd/expurgar',{method:'POST'})).json();
+  alert(`${d.expurgados} registro(s) expurgado(s).`); carregarLgpd();
+};
+
+/* ---------- conexões ---------- */
+const CAMPOS = {
+  mercadolivre:[['ML_CLIENT_ID','App ID'],['ML_CLIENT_SECRET','Secret Key']],
+  shopee:[['SHOPEE_PARTNER_ID','Partner ID'],['SHOPEE_PARTNER_KEY','Partner Key'],['SHOPEE_SHOP_ID','Shop ID']],
+  amazon:[['AMZ_LWA_CLIENT_ID','LWA Client ID'],['AMZ_LWA_CLIENT_SECRET','LWA Secret'],['AMZ_REFRESH_TOKEN','Refresh Token']],
+  claude:[['ANTHROPIC_API_KEY','Chave da API']],
+};
+
+async function carregarConfig(){
+  const d = await (await fetch('/api/configuracao')).json();
+  $('#lista-config').innerHTML = Object.entries(d).map(([prov, c]) => {
+    const pronto = c.app_criado && c.autorizado;
+    const selo = pronto ? ['pronto','Conectado']
+               : c.app_criado ? ['parcial','Falta autorizar'] : ['falta','Não configurado'];
+    const campos = (CAMPOS[prov]||[]).map(([k,rot]) =>
+      `<input type="text" id="cfg-${k}" placeholder="${rot}" aria-label="${rot}">`).join('');
+    const aviso = c.aviso ? `<div class="teste ruim" style="margin:0 0 .9rem">${esc(c.aviso)}</div>` : '';
+    const uri = c.redirect_uri
+      ? `<p style="margin:.2rem 0 .9rem;font-size:.9rem">URI de redirect pra colar no portal:<br>
+         <code style="background:var(--realce);padding:.25rem .5rem;display:inline-block;margin-top:.25rem;word-break:break-all">${esc(c.redirect_uri)}</code>
+         <button class="acao" style="margin-left:.4rem;min-height:28px;padding:.15rem .6rem"
+           onclick="navigator.clipboard.writeText('${esc(c.redirect_uri)}');this.textContent='copiado'">copiar</button></p>` : '';
+    const autorizar = (prov==='mercadolivre'||prov==='shopee')
+      ? `<button class="acao ok" onclick="autorizar('${prov}')">Autorizar no site deles</button>` : '';
+    const concluir = prov==='mercadolivre'
+      ? `<div style="margin-top:.9rem;padding-top:.9rem;border-top:1px dashed var(--linha)">
+           <label for="ml-retorno" style="font-size:.9rem;color:var(--tinta-fraca);display:block;margin-bottom:.4rem">
+             Depois de autorizar, cole aqui a URL inteira da barra de endereço:</label>
+           <div class="linha-campos">
+             <input type="text" id="ml-retorno" placeholder="https://localhost:8777/oauth/ml/retorno?code=TG-..."
+                    aria-label="URL de retorno do Mercado Livre">
+             <button class="acao ok" onclick="concluirML()">Concluir conexão</button>
+           </div></div>` : '';
+    return `<article class="conexao">
+      <header><h2>${esc(c.nome)}</h2><span class="selo ${selo[0]}">${selo[1]}</span></header>
+      <div class="miolo">
+        ${aviso}
+        <ol>${c.passos.map(p => `<li>${esc(p)}</li>`).join('')}</ol>
+        ${uri}
+        <p style="margin:.2rem 0 .8rem"><a href="${esc(c.portal)}" target="_blank" rel="noopener"
+           style="color:var(--saldo);font-weight:600">Abrir o portal ↗</a></p>
+        <div class="linha-campos">${campos}</div>
+        <div class="acoes" style="justify-content:flex-start">
+          <button class="acao ok" onclick="salvarConfig('${prov}')">Salvar chaves</button>
+          ${autorizar}
+          <button class="acao" onclick="testarConexao('${prov}')">Testar conexão</button>
+        </div>
+        ${concluir}
+        <div id="teste-${prov}"></div>
+      </div></article>`;
+  }).join('');
+}
+
+async function autorizar(prov){
+  const r = await fetch(`/api/configuracao/url-autorizacao/${prov}`);
+  if (!r.ok){
+    const e = await r.json().catch(()=>({detail:'erro'}));
+    mostrarTeste(prov, false, e.detail || 'Não deu pra gerar o link.');
+    return;
+  }
+  const {url} = await r.json();
+  window.open(url, '_blank', 'noopener');
+  mostrarTeste(prov, true, 'Abri a autorização em outra aba. Autorize lá, depois volte '
+    + 'aqui e cole a URL de retorno no campo abaixo.');
+}
+
+async function concluirML(){
+  const retorno = $('#ml-retorno').value.trim();
+  if (!retorno){ mostrarTeste('mercadolivre', false, 'Cole a URL de retorno primeiro.'); return; }
+  mostrarTeste('mercadolivre', true, 'Trocando o código por token…');
+  const d = await (await fetch('/api/configuracao/concluir-ml',{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify({retorno})})).json();
+  mostrarTeste('mercadolivre', d.ok, d.detalhe);
+  if (d.ok) setTimeout(carregarConfig, 1200);
+}
+
+async function salvarConfig(prov){
+  const corpo = {};
+  (CAMPOS[prov]||[]).forEach(([k]) => {
+    const v = $(`#cfg-${k}`)?.value.trim();
+    if (v) corpo[k] = v;
+  });
+  if (!Object.keys(corpo).length){ alert('Preencha pelo menos um campo.'); return; }
+  const r = await fetch('/api/configuracao/salvar',{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify(corpo)});
+  mostrarTeste(prov, r.ok, r.ok ? 'Chaves gravadas no .env. Agora clique em autorizar.'
+                                : 'Não deu pra gravar.');
+  if (r.ok) carregarConfig();
+}
+
+async function testarConexao(prov){
+  mostrarTeste(prov, true, 'Testando…');
+  const d = await (await fetch(`/api/configuracao/testar/${prov}`,{method:'POST'})).json();
+  mostrarTeste(prov, d.ok, d.detalhe);
+}
+
+function mostrarTeste(prov, bom, texto){
+  const el = $(`#teste-${prov}`);
+  if (el) el.innerHTML = `<div class="teste ${bom?'bom':'ruim'}">${esc(texto)}</div>`;
+}
+
+async function carregarEventos(){
+  const d = await (await fetch('/api/eventos')).json();
+  $('#corpo-eventos').innerHTML = d.eventos.map(e => `<tr>
+    <td class="num">${esc(e.ocorrido_em.slice(11,19))}</td>
+    <td style="color:${e.nivel==='erro'?'var(--risco)':e.nivel==='atencao'?'var(--espera)':'inherit'}">${esc(e.nivel)}</td>
+    <td>${esc(e.origem)}</td><td>${esc(e.mensagem)}</td></tr>`).join('')
+    || `<tr><td colspan="4" class="vazio"><b>Sem eventos</b></td></tr>`;
+}
+
+carregarFila();
+setInterval(() => { if (abaAtiva === 'fila' && !pendenteDesfazer) carregarFila(); }, 20000);
+</script>
+</body>
+</html>

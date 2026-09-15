@@ -1,33 +1,98 @@
-# Compiled source #
-###################
-*.com
-*.class
-*.dll
-*.exe
-*.o
-*.so
+# ---------------------------------------------------------------
+# SECRETS — never commit these. This repository is a public portfolio.
+# ---------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+secrets.json
+credentials.json
+token.json
+tokens.json
+*_token*.json
+oauth_*.json
+config.local.*
+settings.local.*
 
-# Packages #
-############
-# it's better to unpack these files and commit the raw source
-# git has its own built in compression methods
-*.7z
-*.dmg
-*.gz
-*.iso
-*.jar
-*.rar
-*.tar
-*.zip
-
-# Logs and databases #
-######################
-*.log
-*.sql
+# ---------------------------------------------------------------
+# DATABASES — contain real orders and customer PII (LGPD)
+# ---------------------------------------------------------------
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
 *.sqlite
+*.sqlite3
+# SQL dumps can hold data; schema and migration scripts are code, so keep those tracked
+*.sql
+!schema.sql
+!**/migrations/*.sql
+dados/
+data/
+backups/
+*.bak
+*.dump
 
-# OS generated files #
-######################
+# ---------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.virtualenv/
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+
+# ---------------------------------------------------------------
+# Logs
+# ---------------------------------------------------------------
+*.log
+logs/
+log/
+
+# ---------------------------------------------------------------
+# Editors / OS
+# ---------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
 .DS_Store
 .DS_Store?
 ._*
@@ -35,3 +100,14 @@
 .Trashes
 ehthumbs.db
 Thumbs.db
+desktop.ini
+
+# ---------------------------------------------------------------
+# PROJECT RUNTIME FILES — kept from the original local .gitignore
+# ---------------------------------------------------------------
+# LGPD encryption key (Fernet). It decrypts buyer PII. Never commit.
+.chave_lgpd
+.token_ml.json
+.token_shopee.json
+ordens_de_compra/
+.primeira_execucao
