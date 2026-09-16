@@ -57,8 +57,20 @@ def _abrir_navegador():
 
 def main():
     from painel.app import app, preparar
+    from core import seguranca
 
     preparar()
+
+    # Fail closed: sem operador o painel não deixa ninguém entrar, e fora do
+    # endereço local ele ficaria exposto antes de existir login utilizável.
+    host = os.getenv("HOST_PAINEL", "127.0.0.1")
+    local = host in ("127.0.0.1", "localhost", "::1")
+    if not seguranca.existe_operador():
+        print("Nenhum operador cadastrado. Crie um antes de usar o painel:")
+        print("    python cli.py operador --usuario SEU_USUARIO")
+        if not local:
+            print(f"Recusando iniciar em {host} sem operador.")
+            return
 
     if os.getenv("WORKER_ATIVO", "true").lower() == "true":
         threading.Thread(target=_laco_worker, daemon=True).start()
@@ -73,8 +85,7 @@ def main():
     print(f"Painel em http://127.0.0.1:{PORTA}  (Ctrl+C encerra)")
 
     import uvicorn
-    uvicorn.run(app, host=os.getenv("HOST_PAINEL", "127.0.0.1"),
-                port=PORTA, log_level="warning")
+    uvicorn.run(app, host=host, port=PORTA, log_level="warning")
 
 
 if __name__ == "__main__":

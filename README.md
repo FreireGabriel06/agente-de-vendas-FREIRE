@@ -10,8 +10,9 @@ Built with **FastAPI** and **SQLite** and operated from a local web panel.
 
 > **Status (September 2026):** runs locally and has been exercised with
 > synthetic data only. The marketplace integrations are implemented but have
-> **not been validated against live seller accounts**. The panel has **no
-> login** — keep it on `127.0.0.1` and never expose it to a network.
+> **not been validated against live seller accounts**. The panel now requires
+> a login, but with a single shared operator and no HTTPS by default — keep it
+> on `127.0.0.1`.
 
 The code targets Brazilian marketplaces today, Mercado Livre first. The
 [roadmap](#roadmap) moves the product to US marketplaces.
@@ -64,7 +65,7 @@ There is no automated test suite yet.
 | Shopee: partner authorization with HMAC-signed calls, order listing | `conectores/shopee.py` | Not validated; used only by connection setup and test, not by the worker |
 | Amazon SP-API with Login with Amazon: order listing | `conectores/amazon.py` | Not validated; used only by the connection test, not by the worker |
 | Product and supplier registration | — | Planned — manual SQL today |
-| Panel login | — | Planned |
+| Panel login: one operator, server-side session, CSRF token in a header | `core/seguranca.py`, `painel/app.py` | Verified locally |
 | Standalone executable | `agente.spec` | Not verified |
 
 ---
@@ -99,6 +100,9 @@ python executar.py
 
 Before you rely on it:
 
+- **Create the operator before the first login:**
+  `python cli.py operador --usuario your_user`. The panel answers 401 to every
+  request without a session, so nobody gets in until this runs.
 - **Back up `.chave_lgpd`.** Without it the stored buyer data cannot be
   decrypted. Git ignores it; keep it that way.
 - **`demo.py` deletes** the existing orders, order history, approvals, products
@@ -134,7 +138,8 @@ locally and never commit `.env`.
 | `DB_PATH` | `agente.db` | SQLite database file |
 | `CHAVE_LGPD` | empty | Encryption key; when empty, `.chave_lgpd` is used |
 | `RETENCAO_PII_DIAS` | `1825` | Days before buyer data is purged |
-| `HOST_PAINEL` | `127.0.0.1` | Panel address; keep it until the panel has a login |
+| `HOST_PAINEL` | `127.0.0.1` | Panel address; keep it while there is a single operator and no HTTPS |
+| `SESSAO_OCIOSA_MIN`, `SESSAO_MAX_HORAS` | `30`, `8` | Idle timeout and maximum session lifetime |
 | `WORKER_ATIVO`, `ABRIR_NAVEGADOR` | `true` | Start the worker; open the browser |
 | `PORTA_PAINEL`, `INTERVALO_WORKER` | `8777`, `300` | Panel port and worker interval; today only honoured as real environment variables, not from `.env` |
 | `MODO_SIMULACAO` | `true` | Not implemented: the code does not read it |
@@ -186,7 +191,7 @@ database. API responses mask the name; the reveal endpoint logs every read.
 
 ## Known limitations
 
-- No panel login: anyone who reaches the port controls the queue and the settings.
+- One shared operator, no roles and no HTTPS by default. Keep the panel on `127.0.0.1` until both exist.
 - Only Mercado Livre is automated; Shopee and Amazon stop at the connection test.
 - No integration has been validated with a live seller account.
 - Purchase orders are text files; nothing reaches suppliers.

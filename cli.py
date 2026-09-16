@@ -13,6 +13,7 @@ Painel de comando do robô.
   python cli.py ciclo                          roda uma passada do worker
   python cli.py rodar --intervalo 300          roda em laço contínuo
   python cli.py eventos                        últimos alertas
+  python cli.py operador --usuario ana         cria o operador ou troca a senha
 """
 import argparse
 import sys
@@ -93,6 +94,20 @@ def cmd_rodar(args):
     rodar(args.intervalo)
 
 
+def cmd_operador(args):
+    """Cria o operador do painel ou troca a senha. A senha nunca vem por argumento."""
+    import getpass
+    from core import seguranca
+
+    inicializar()
+    seguranca.inicializar_seguranca()
+    senha = getpass.getpass(f"Senha (mínimo {seguranca.SENHA_MINIMA} caracteres): ")
+    if senha != getpass.getpass("Repita a senha: "):
+        print("As senhas não conferem.")
+        sys.exit(1)
+    print(seguranca.definir_operador(args.usuario, senha) + f": {args.usuario}")
+
+
 def cmd_eventos(args):
     with conectar() as conn:
         linhas = conn.execute(
@@ -128,6 +143,9 @@ def main():
 
     ro = sub.add_parser("rodar"); ro.add_argument("--intervalo", type=int, default=300); ro.set_defaults(func=cmd_rodar)
     ev = sub.add_parser("eventos"); ev.add_argument("-n", type=int, default=25); ev.set_defaults(func=cmd_eventos)
+
+    op = sub.add_parser("operador"); op.add_argument("--usuario", required=True)
+    op.set_defaults(func=cmd_operador)
 
     args = p.parse_args()
     try:
