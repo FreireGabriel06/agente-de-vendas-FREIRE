@@ -17,20 +17,53 @@ Decisões de UX que valem explicar:
 """
 import asyncio
 import json
+import secrets
 import threading
 from pathlib import Path
 
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from db import conectar, inicializar, registrar_evento
-from core import aprovacao, conformidade, privacidade
+from core import aprovacao, conformidade, privacidade, seguranca
 from core.estados import Estado, ESTADOS_CRITICOS, historico
 from inteligencia import precificacao, tendencias
 
 BASE = Path(__file__).resolve().parent
 app = FastAPI(title="Agente Comercial", docs_url=None, redoc_url=None)
+
+
+# ------------------------------------------------------------- Autenticação
+#
+# Toda rota exige sessão, menos a tela de login e a chamada que a atende.
+# O retorno do OAuth também exige sessão: o cookie é SameSite=Lax e viaja na
+# navegação de volta do marketplace.
+
+CAMINHOS_LIVRES = {"/login", "/api/login"}
+
+
+@app.middleware("http")
+async def exigir_sessao(request: Request, call_next):
+    caminho = request.url.path
+    if caminho in CAMINHOS_LIVRES:
+        return await call_next(request)
+
+    sessao = seguranca.validar_sessao(request.cookies.get(seguranca.COOKIE_SESSAO))
+    if sessao is None:
+        if caminho.startswith("/api/"):
+            return JSONResponse({"detail": "Sessão necessária."}, status_code=401)
+        return RedirectResponse("/login", status_code=303)
+
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        enviado = request.headers.get("x-csrf-token", "")
+        if not secrets.compare_digest(enviado, sessao["csrf"]):
+            return JSONResponse({"detail": "Token CSRF inválido."}, status_code=403)
+
+    request.state.operador = sessao["usuario"]
+    request.state.csrf = sessao["csrf"]
+    return await call_next(request)
+
 
 
 # ------------------------------------------------------------------ Dados
@@ -116,14 +149,18 @@ def api_pedido(pedido_id: int):
 
 
 @app.get("/api/pedido/{pedido_id}/comprador")
-def api_comprador(pedido_id: int):
-    """Revela o PII sob demanda, e registra o acesso. LGPD art. 6º, X."""
-    return privacidade.ler_comprador(pedido_id, ator="painel",
+def api_comprador(pedido_id: int, request: Request):
+    """Revela o PII sob demanda, e registra o acesso. LGPD art. 6º, X.
+
+    O registro guarda o operador que pediu, não o nome do sistema: sem isso
+    a trilha não responde quem viu o dado do comprador.
+    """
+    return privacidade.ler_comprador(pedido_id, ator=request.state.operador,
                                      finalidade="conferência de entrega pelo operador")
 
 
 @app.post("/api/aprovar/{aprovacao_id}")
-def api_aprovar(aprovacao_id: int):
+def api_aprovar(aprovacao_id: int, request: Request):
     from worker import EXECUTORES
     itens = {i["id"]: i for i in _pendencias_com_conformidade()}
     alvo = itens.get(aprovacao_id)
@@ -134,6 +171,8 @@ def api_aprovar(aprovacao_id: int):
                             "; ".join(v["mensagem"] for v in alvo["violacoes"]))
     try:
         resultado = aprovacao.aprovar(aprovacao_id, EXECUTORES)
+        registrar_evento("info", "aprovacao",
+                         f"Ação {aprovacao_id} liberada por {request.state.operador}")
         return {"ok": True, "resultado": resultado}
     except Exception as e:
         raise HTTPException(500, str(e))
@@ -142,7 +181,8 @@ def api_aprovar(aprovacao_id: int):
 @app.post("/api/recusar/{aprovacao_id}")
 async def api_recusar(aprovacao_id: int, request: Request):
     corpo = await request.json() if await request.body() else {}
-    aprovacao.recusar(aprovacao_id, corpo.get("motivo", "recusado no painel"))
+    motivo = corpo.get("motivo", "recusado no painel")
+    aprovacao.recusar(aprovacao_id, f"{motivo} (por {request.state.operador})")
     return {"ok": True}
 
 
@@ -351,6 +391,83 @@ def _pagina_retorno(ok: bool, mensagem: str) -> str:
 </body></html>"""
 
 
+# ---------------------------------------------------------------- Sessão
+
+@app.get("/login", response_class=HTMLResponse)
+def pagina_login():
+    return _pagina_login()
+
+
+@app.post("/api/login")
+async def api_login(request: Request):
+    corpo = await request.json()
+    try:
+        sid, csrf = seguranca.autenticar(corpo.get("usuario", ""), corpo.get("senha", ""))
+    except seguranca.FalhaLogin as e:
+        return JSONResponse({"detail": str(e)}, status_code=401)
+    resposta = JSONResponse({"ok": True, "csrf": csrf})
+    resposta.set_cookie(
+        seguranca.COOKIE_SESSAO, sid, httponly=True, samesite="lax",
+        secure=request.url.scheme == "https",
+        max_age=seguranca.DURACAO_MAX_H * 3600, path="/")
+    return resposta
+
+
+@app.post("/api/logout")
+def api_logout(request: Request):
+    seguranca.encerrar_sessao(request.cookies.get(seguranca.COOKIE_SESSAO))
+    registrar_evento("info", "seguranca", f"Saída de {request.state.operador}")
+    resposta = JSONResponse({"ok": True})
+    resposta.delete_cookie(seguranca.COOKIE_SESSAO, path="/")
+    return resposta
+
+
+@app.get("/api/sessao")
+def api_sessao(request: Request):
+    """O painel busca aqui o token que assina as chamadas que mudam estado."""
+    return {"usuario": request.state.operador, "csrf": request.state.csrf}
+
+
+def _pagina_login() -> str:
+    return """<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Entrar — Agente Comercial</title>
+<style>
+ body{margin:0;min-height:100vh;display:grid;place-items:center;background:#E3E8E3;
+      color:#16211D;font-family:"Public Sans","Segoe UI",system-ui,sans-serif}
+ form{background:#EDF0EC;border:1px solid #C3CDC6;padding:1.6rem;width:min(22rem,90vw);
+      display:grid;gap:.85rem}
+ h1{margin:0;font-size:1.1rem;letter-spacing:-.01em}
+ label{display:grid;gap:.25rem;font-size:.88rem;color:#59665F}
+ input{font:inherit;padding:.5rem .6rem;border:1px solid #96A69C;background:#fff;color:#16211D}
+ button{font:inherit;padding:.5rem;border:1px solid #14614A;background:#14614A;
+        color:#EDF0EC;cursor:pointer;font-weight:600}
+ .erro{margin:0;color:#8C2F1B;font-size:.88rem;min-height:1.2em}
+ input:focus-visible,button:focus-visible{outline:2px solid #14614A;outline-offset:2px}
+</style></head><body>
+<form id="entrar">
+  <h1>Agente Comercial</h1>
+  <label>Operador
+    <input id="usuario" autocomplete="username" autofocus required></label>
+  <label>Senha
+    <input id="senha" type="password" autocomplete="current-password" required></label>
+  <button type="submit">Entrar</button>
+  <p class="erro" id="erro" role="alert"></p>
+</form>
+<script>
+document.getElementById('entrar').onsubmit = async ev => {
+  ev.preventDefault();
+  const r = await fetch('/api/login', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({usuario: document.getElementById('usuario').value,
+                          senha: document.getElementById('senha').value})});
+  if (r.ok) { window.location = '/'; return; }
+  const d = await r.json().catch(() => ({detail:'Não deu para entrar.'}));
+  document.getElementById('erro').textContent = d.detail || 'Não deu para entrar.';
+};
+</script></body></html>"""
+
+
 # ------------------------------------------------------------------ Tela
 
 @app.get("/", response_class=HTMLResponse)
@@ -361,3 +478,4 @@ def painel():
 def preparar():
     inicializar()
     privacidade.inicializar_lgpd()
+    seguranca.inicializar_seguranca()

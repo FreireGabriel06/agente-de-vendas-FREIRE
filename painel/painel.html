@@ -134,6 +134,10 @@ input[type=text],input[type=number]{
 #desfazer button{background:none;border:1px solid var(--papel);color:var(--papel);
   font:inherit;padding:.25rem .7rem;cursor:pointer}
 
+.sessao{font-size:.82rem; color:var(--tinta-fraca); display:flex; gap:.45rem; align-items:baseline}
+.sessao button{background:none; border:0; color:var(--tinta-fraca); font:inherit;
+  text-decoration:underline; cursor:pointer; padding:0}
+.sessao button:hover{color:var(--risco)}
 .atalhos{margin-top:1.4rem; color:var(--tinta-fraca); font-size:.85rem}
 kbd{background:var(--papel); border:1px solid var(--linha-forte); padding:.05rem .35rem;
   font-family:inherit; font-size:.85em}
@@ -160,6 +164,7 @@ kbd{background:var(--papel); border:1px solid var(--linha-forte); padding:.05rem
       <button data-aba="eventos">Eventos</button>
       <button data-aba="config">Conexões</button>
     </nav>
+    <span class="sessao"><span id="operador">—</span><button type="button" id="btn-sair">sair</button></span>
   </div>
 </header>
 
@@ -281,6 +286,29 @@ kbd{background:var(--papel); border:1px solid var(--linha-forte); padding:.05rem
 </div>
 
 <script>
+/* ---------- sessão ----------
+   Uma única passagem por aqui resolve o token CSRF de todas as chamadas que
+   mudam estado, sem tocar em cada ponto de fetch. Sessão vencida volta para
+   a tela de login. */
+const fetchDireto = window.fetch.bind(window);
+let tokenCsrf = null;
+const sessaoPronta = fetchDireto('/api/sessao')
+  .then(r => r.ok ? r.json() : null)
+  .then(d => { if (d) { tokenCsrf = d.csrf; $('#operador').textContent = d.usuario; } return d; })
+  .catch(() => null);
+
+window.fetch = async (url, opcoes = {}) => {
+  const metodo = (opcoes.method || 'GET').toUpperCase();
+  if (metodo !== 'GET' && metodo !== 'HEAD') {
+    if (!tokenCsrf) await sessaoPronta;
+    opcoes = Object.assign({}, opcoes,
+      {headers: Object.assign({}, opcoes.headers, {'X-CSRF-Token': tokenCsrf || ''})});
+  }
+  const r = await fetchDireto(url, opcoes);
+  if (r.status === 401) window.location = '/login';
+  return r;
+};
+
 const $ = s => document.querySelector(s);
 const brl = v => (v ?? 0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -571,6 +599,11 @@ async function carregarEventos(){
     <td>${esc(e.origem)}</td><td>${esc(e.mensagem)}</td></tr>`).join('')
     || `<tr><td colspan="4" class="vazio"><b>Sem eventos</b></td></tr>`;
 }
+
+$('#btn-sair').onclick = async () => {
+  await fetch('/api/logout', {method:'POST'});
+  window.location = '/login';
+};
 
 carregarFila();
 setInterval(() => { if (abaAtiva === 'fila' && !pendenteDesfazer) carregarFila(); }, 20000);
