@@ -19,6 +19,9 @@ Decisões e fontes (consultadas em 16/09/2026):
     vinda de outro site, e com Strict o cookie não seria enviado.
   - CSRF por token próprio em cabeçalho, adequado para API JSON de mesma
     origem. OWASP CSRF Prevention Cheat Sheet.
+  - Retorno de OAuth só com state criado pela mesma sessão: aleatório, válido
+    por 10 min, apagado no primeiro uso e preso ao hash da sessão. RFC 9700,
+    seção 2.1; OWASP ASVS 5.0, requisitos 10.1.2 e 10.2.1.
 
 Cada verificação de senha custa cerca de 134 MB de memória, por desenho do
 scrypt. O bloqueio por tentativas limita o abuso. Exposto à internet, isso
@@ -29,6 +32,8 @@ import hashlib
 import hmac
 import os
 import secrets
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 from db import agora, conectar, registrar_evento
@@ -210,3 +215,67 @@ def encerrar_sessao(sid: str | None):
         return
     with conectar() as conn:
         conn.execute("DELETE FROM sessoes WHERE id = ?", (sid,))
+
+
+# ------------------------------------------------------------ State do OAuth
+#
+# O retorno de um marketplace só vale se a autorização saiu desta mesma
+# sessão. O state é aleatório (256 bits), vale 10 minutos, sai da memória no
+# primeiro uso — certo ou errado — e fica preso ao hash da sessão, nunca ao
+# identificador em claro. Não depende de PKCE, que nem todo marketplace
+# oferece. RFC 9700, seção 2.1; OWASP ASVS 5.0, requisitos 10.1.2 e 10.2.1.
+#
+# Fica em memória porque o painel roda num processo só (executar.py). Um
+# reinício no meio da autorização só pede um clique novo em "autorizar".
+
+STATE_VALIDADE_S = 10 * 60
+STATE_PENDENTES_MAX = 50
+
+_states: dict[str, dict] = {}
+_trava_states = threading.Lock()
+
+
+class StateInvalido(ValueError):
+    """Retorno de OAuth que esta sessão não iniciou, vencido ou repetido."""
+
+
+def _vinculo(sid: str) -> str:
+    return hashlib.sha256(sid.encode()).hexdigest()
+
+
+def criar_state_oauth(provedor: str, sid: str | None, dados: dict | None = None) -> str:
+    """Abre uma autorização de `provedor` presa à sessão `sid`. `dados` guarda o
+    que o retorno vai precisar, como o verifier do PKCE."""
+    if not sid:
+        raise StateInvalido("Entre no painel antes de autorizar.")
+    momento = time.monotonic()
+    state = secrets.token_urlsafe(32)
+    with _trava_states:
+        for chave in [k for k, v in _states.items() if momento - v["criado"] > STATE_VALIDADE_S]:
+            del _states[chave]
+        while len(_states) >= STATE_PENDENTES_MAX:
+            del _states[min(_states, key=lambda k: _states[k]["criado"])]
+        _states[state] = {"provedor": provedor, "vinculo": _vinculo(sid),
+                          "criado": momento, "dados": dict(dados or {})}
+    return state
+
+
+def consumir_state_oauth(state: str | None, provedor: str, sid: str | None) -> dict:
+    """Devolve os `dados` da autorização ou levanta StateInvalido. O state sai
+    da memória antes de qualquer conferência: não serve para outra tentativa."""
+    with _trava_states:
+        registro = _states.pop(state or "", None)
+    if registro is None:
+        motivo = "desconhecido ou já usado"
+    elif time.monotonic() - registro["criado"] > STATE_VALIDADE_S:
+        motivo = "vencido"
+    elif registro["provedor"] != provedor:
+        motivo = "de outro provedor"
+    elif not sid or not hmac.compare_digest(registro["vinculo"], _vinculo(sid)):
+        motivo = "de outra sessão"
+    else:
+        return registro["dados"]
+    # A recusa vai para o registro sem o valor do state. ASVS 5.0, 16.3.2 e 16.2.5.
+    registrar_evento("aviso", "seguranca", f"Retorno de autorização recusado ({provedor}): state {motivo}")
+    raise StateInvalido("Esta autorização não saiu desta sessão, já foi usada ou venceu. "
+                        "Clique em autorizar de novo.")

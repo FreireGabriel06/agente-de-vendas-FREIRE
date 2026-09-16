@@ -29,6 +29,7 @@ from urllib.parse import urlencode, urlparse, parse_qs
 import requests
 
 from config import BASE_DIR, config
+from core import seguranca
 
 ARQ_ENV = BASE_DIR / ".env"
 
@@ -41,9 +42,14 @@ def redirect_padrao() -> str:
     return f"https://localhost:{porta}/oauth/ml/retorno"
 
 
-# Guarda o state e o verifier do PKCE entre o início e o retorno do OAuth.
-_estados: dict[str, str] = {}
-_verifiers: dict[str, str] = {}
+# Só o código de erro do OAuth (ex.: invalid_grant) chega à tela. Texto livre
+# vindo do marketplace fica de fora. Relatório, achado A08; OWASP ASVS 5.0, 16.5.1.
+_CODIGO_OAUTH = re.compile(r"[a-z0-9_.\-]{1,60}")
+
+
+def _codigo_erro_oauth(valor) -> str:
+    valor = str(valor or "").strip().lower()
+    return valor if _CODIGO_OAUTH.fullmatch(valor) else "sem_codigo"
 
 
 def _pkce() -> tuple[str, str]:
@@ -56,8 +62,8 @@ def _pkce() -> tuple[str, str]:
 
 def extrair_code(texto: str) -> tuple[str, str]:
     """
-    Aceita a URL inteira colada da barra de endereço, ou só o código.
-    Devolve (code, state).
+    Aceita a URL inteira colada da barra de endereço, ou só o código — que a
+    troca recusa, porque vem sem state. Devolve (code, state).
 
     Existe porque o retorno do ML cai num endereço HTTPS que o painel local
     não serve. A página não carrega, mas o código está lá na URL.
@@ -69,7 +75,8 @@ def extrair_code(texto: str) -> tuple[str, str]:
     if "?" in texto or texto.startswith("http"):
         q = parse_qs(urlparse(texto).query)
         if "error" in q:
-            raise ValueError(f"O Mercado Livre retornou erro: {q['error'][0]}")
+            raise ValueError("O Mercado Livre recusou a autorização "
+                             f"({_codigo_erro_oauth(q['error'][0])}).")
         code = (q.get("code") or [""])[0]
         state = (q.get("state") or [""])[0]
         if not code:
@@ -174,16 +181,13 @@ def status() -> dict:
 
 # --------------------------------------------------------- Mercado Livre
 
-def ml_url_autorizacao(redirect_uri: str | None = None) -> str:
+def ml_url_autorizacao(sid: str | None, redirect_uri: str | None = None) -> str:
     if not os.getenv("ML_CLIENT_ID"):
         raise ValueError("Salve o App ID e a Secret Key do Mercado Livre primeiro.")
     redirect_uri = redirect_uri or os.getenv("ML_REDIRECT_URI") or redirect_padrao()
-    estado = secrets.token_urlsafe(16)
     verifier, challenge = _pkce()
-    _estados[estado] = "ml"
-    _verifiers[estado] = verifier
-    # Guarda o último state pra quando você colar a URL sem ele.
-    _estados["_ultimo_ml"] = estado
+    # O state prende o retorno a esta sessão; o verifier do PKCE viaja com ele.
+    estado = seguranca.criar_state_oauth("mercadolivre", sid, {"verifier": verifier})
     return "https://auth.mercadolivre.com.br/authorization?" + urlencode({
         "response_type": "code",
         "client_id": os.getenv("ML_CLIENT_ID"),
@@ -194,15 +198,15 @@ def ml_url_autorizacao(redirect_uri: str | None = None) -> str:
     })
 
 
-def ml_trocar_code(code_ou_url: str, redirect_uri: str | None = None) -> dict:
+def ml_trocar_code(code_ou_url: str, sid: str | None, redirect_uri: str | None = None) -> dict:
     code, estado = extrair_code(code_ou_url)
+    if not estado:
+        raise ValueError("Cole a URL inteira da barra de endereço, não só o código: "
+                         "é ela que prova que a autorização saiu deste painel.")
+    # Antes de qualquer chamada ao marketplace: recusa o state que esta sessão
+    # não criou, que venceu ou que já foi usado.
+    verifier = seguranca.consumir_state_oauth(estado, "mercadolivre", sid)["verifier"]
     redirect_uri = redirect_uri or os.getenv("ML_REDIRECT_URI") or redirect_padrao()
-
-    # Recupera o verifier do PKCE. Se você colou a URL sem state, usa o último
-    # que geramos — funciona porque só há uma autorização em curso por vez.
-    estado = estado or _estados.get("_ultimo_ml", "")
-    verifier = _verifiers.pop(estado, None)
-    _estados.pop(estado, None)
 
     dados = {
         "grant_type": "authorization_code",
@@ -210,21 +214,25 @@ def ml_trocar_code(code_ou_url: str, redirect_uri: str | None = None) -> dict:
         "client_secret": os.getenv("ML_CLIENT_SECRET"),
         "code": code,
         "redirect_uri": redirect_uri,
+        "code_verifier": verifier,
     }
-    if verifier:
-        dados["code_verifier"] = verifier
 
     r = requests.post("https://api.mercadolibre.com/oauth/token", data=dados, timeout=25)
 
     if r.status_code != 200:
-        detalhe = r.text[:250]
-        if "redirect_uri" in detalhe:
-            detalhe += ("  →  A URI aqui e a cadastrada no DevCenter precisam ser "
-                        "idênticas, caractere por caractere.")
-        if "invalid_grant" in detalhe:
-            detalhe += ("  →  O código só vale uma vez e expira em minutos. "
-                        "Clique em autorizar de novo e cole o código novo.")
-        raise ValueError(f"O Mercado Livre recusou a troca ({r.status_code}): {detalhe}")
+        try:
+            corpo = r.json()
+        except ValueError:
+            corpo = {}
+        codigo = _codigo_erro_oauth(corpo.get("error") if isinstance(corpo, dict) else "")
+        dica = ""
+        if "redirect_uri" in r.text:
+            dica += ("  →  A URI aqui e a cadastrada no DevCenter precisam ser "
+                     "idênticas, caractere por caractere.")
+        if codigo == "invalid_grant":
+            dica += ("  →  O código só vale uma vez e expira em minutos. "
+                     "Clique em autorizar de novo e cole a URL nova.")
+        raise ValueError(f"O Mercado Livre recusou a troca ({r.status_code}, {codigo}).{dica}")
 
     d = r.json()
     gravar_env({

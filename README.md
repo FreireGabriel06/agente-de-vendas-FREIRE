@@ -66,6 +66,7 @@ There is no automated test suite yet.
 | Amazon SP-API with Login with Amazon: order listing | `conectores/amazon.py` | Not validated; used only by the connection test, not by the worker |
 | Product and supplier registration | — | Planned — manual SQL today |
 | Panel login: one operator, server-side session, CSRF token in a header | `core/seguranca.py`, `painel/app.py` | Verified locally |
+| OAuth return: `state` created by the same panel session, single use, valid for 10 minutes; return pages escape their output and show fixed error messages | `core/seguranca.py`, `painel/app.py`, `painel/configurar.py` | Verified locally with a fake token endpoint |
 | Standalone executable | `agente.spec` | Not verified |
 
 ---
@@ -156,7 +157,9 @@ with a live account yet.
   `https://localhost:8777/oauth/ml/retorno`, paste the App ID and Secret Key,
   click authorize, then paste the whole return URL into the panel. The browser
   shows a connection error on that URL because the panel serves plain HTTP; the
-  code is read from the pasted URL.
+  code is read from the pasted URL. The URL is accepted only from the same
+  panel session that started the authorization, once, within 10 minutes;
+  pasting only the code is refused.
 - **Shopee:** paste the Partner ID, Partner Key and Shop ID, then authorize.
   The authorization link expires after 5 minutes.
 - **Amazon:** paste the LWA client ID, client secret and a refresh token issued
