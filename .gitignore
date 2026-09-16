@@ -111,3 +111,10 @@ desktop.ini
 .token_shopee.json
 ordens_de_compra/
 .primeira_execucao
+
+# ---------------------------------------------------------------
+# LOCAL TOOLING — agent skills installed on this machine, not project code
+# ---------------------------------------------------------------
+.agents/
+.claude/
+skills-lock.json
