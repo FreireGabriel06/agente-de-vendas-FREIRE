@@ -16,6 +16,7 @@ Decisões de UX que valem explicar:
     que você ignora clicando — o caminho não existe até a causa ser resolvida.
 """
 import asyncio
+import html
 import json
 import secrets
 import threading
@@ -49,7 +50,8 @@ async def exigir_sessao(request: Request, call_next):
     if caminho in CAMINHOS_LIVRES:
         return await call_next(request)
 
-    sessao = seguranca.validar_sessao(request.cookies.get(seguranca.COOKIE_SESSAO))
+    sid = request.cookies.get(seguranca.COOKIE_SESSAO)
+    sessao = seguranca.validar_sessao(sid)
     if sessao is None:
         if caminho.startswith("/api/"):
             return JSONResponse({"detail": "Sessão necessária."}, status_code=401)
@@ -62,6 +64,7 @@ async def exigir_sessao(request: Request, call_next):
 
     request.state.operador = sessao["usuario"]
     request.state.csrf = sessao["csrf"]
+    request.state.sid = sid  # prende o state do OAuth a esta sessão
     return await call_next(request)
 
 
@@ -278,7 +281,7 @@ def api_url_autorizacao(provedor: str, request: Request):
     from painel import configurar
     try:
         if provedor == "mercadolivre":
-            return {"url": configurar.ml_url_autorizacao()}
+            return {"url": configurar.ml_url_autorizacao(request.state.sid)}
         if provedor == "shopee":
             return {"url": configurar.shopee_url_autorizacao(_redirect_uri(request, "shopee"))}
         raise HTTPException(400, "Provedor desconhecido.")
@@ -292,27 +295,30 @@ async def api_concluir_ml(request: Request):
     from painel import configurar
     corpo = await request.json()
     try:
-        d = configurar.ml_trocar_code(corpo.get("retorno", ""))
+        d = configurar.ml_trocar_code(corpo.get("retorno", ""), request.state.sid)
         registrar_evento("info", "configuracao", f"Mercado Livre conectado (vendedor {d['seller_id']})")
         return {"ok": True, "detalhe": f"Conectado. Vendedor {d['seller_id']}."}
     except ValueError as e:
         return {"ok": False, "detalhe": str(e)}
     except Exception as e:
-        return {"ok": False, "detalhe": str(e)[:300]}
+        return {"ok": False, "detalhe": _falha_generica("Mercado Livre", e)}
 
 
 @app.get("/oauth/ml/retorno", response_class=HTMLResponse)
-def oauth_ml_retorno(request: Request, code: str = "", state: str = "", error: str = ""):
+def oauth_ml_retorno(request: Request, code: str = "", error: str = ""):
     """Só funciona se você conseguir servir HTTPS. Caso contrário, use o
     campo de colar a URL no painel — é o caminho normal."""
     from painel import configurar
     if error or not code:
-        return _pagina_retorno(False, error or "O Mercado Livre não devolveu o código.")
+        return _pagina_retorno(False, "O Mercado Livre não concluiu a autorização. "
+                                      "Volte ao painel e tente de novo.")
     try:
-        d = configurar.ml_trocar_code(str(request.url))
+        d = configurar.ml_trocar_code(str(request.url), request.state.sid)
         return _pagina_retorno(True, f"Mercado Livre conectado. Vendedor {d['seller_id']}.")
-    except Exception as e:
+    except ValueError as e:
         return _pagina_retorno(False, str(e))
+    except Exception as e:
+        return _pagina_retorno(False, _falha_generica("Mercado Livre", e))
 
 
 @app.post("/api/configuracao/salvar")
@@ -335,18 +341,6 @@ async def api_salvar_config(request: Request):
     return {"ok": True, "salvas": sorted(chaves)}
 
 
-@app.get("/oauth/ml/retorno", response_class=HTMLResponse)
-def oauth_ml_retorno(request: Request, code: str = "", state: str = "", error: str = ""):
-    from painel import configurar
-    if error or not code:
-        return _pagina_retorno(False, error or "O Mercado Livre não devolveu o código.")
-    try:
-        d = configurar.ml_trocar_code(code, state, _redirect_uri(request, "ml"))
-        return _pagina_retorno(True, f"Mercado Livre conectado. Vendedor {d['seller_id']}.")
-    except Exception as e:
-        return _pagina_retorno(False, str(e))
-
-
 @app.get("/oauth/shopee/iniciar")
 def oauth_shopee_iniciar(request: Request):
     from fastapi.responses import RedirectResponse
@@ -367,7 +361,7 @@ def oauth_shopee_retorno(code: str = "", shop_id: str = ""):
         d = configurar.shopee_trocar_code(code, shop_id)
         return _pagina_retorno(True, f"Shopee conectada. Loja {d['shop_id']}.")
     except Exception as e:
-        return _pagina_retorno(False, str(e))
+        return _pagina_retorno(False, _falha_generica("Shopee", e))
 
 
 @app.post("/api/configuracao/testar/{marketplace}")
@@ -376,7 +370,18 @@ def api_testar(marketplace: str):
     return configurar.testar(marketplace)
 
 
+def _falha_generica(provedor: str, erro: Exception) -> str:
+    """Erro inesperado ao conectar: a tela recebe texto fixo e o registro guarda
+    só o tipo do erro, nunca a resposta do marketplace, que pode trazer dado ou
+    token. Relatório, achado A08; OWASP ASVS 5.0, 16.5.1 e 16.2.5."""
+    registrar_evento("erro", "configuracao", f"Falha ao conectar {provedor}: {type(erro).__name__}")
+    return f"Não foi possível concluir a conexão com {provedor}. Tente de novo."
+
+
 def _pagina_retorno(ok: bool, mensagem: str) -> str:
+    # Escape de saída: a mensagem pode trazer texto da URL ou do marketplace.
+    # Relatório, achado A06; OWASP ASVS 5.0, 1.2.1.
+    mensagem = html.escape(mensagem)
     cor = "#14614A" if ok else "#8C2F1B"
     titulo = "Pronto" if ok else "Não deu certo"
     return f"""<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8">
