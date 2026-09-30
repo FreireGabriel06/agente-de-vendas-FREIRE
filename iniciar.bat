@@ -63,8 +63,13 @@ if not exist ".venv\instalado.txt" (
 )
 
 REM ---------- configuracao ----------
-if not exist ".env" (
-  copy .env.example .env >nul
+REM .env, banco e chave ficam em AGENTE_DADOS, se definida no sistema; senao,
+REM nesta pasta. Mesma regra do config.py.
+set "DADOS=."
+if defined AGENTE_DADOS set "DADOS=%AGENTE_DADOS%"
+if not exist "!DADOS!\" mkdir "!DADOS!"
+if not exist "!DADOS!\.env" (
+  copy .env.example "!DADOS!\.env" >nul
   echo   [!] Criado .env a partir do modelo, ainda SEM credenciais.
   echo       O painel sobe e funciona, mas nao busca pedido nenhum
   echo       ate voce preencher as chaves do marketplace no arquivo .env
@@ -93,7 +98,7 @@ if not exist "core\privacidade.py" (
 )
 
 REM ---------- banco ----------
-if not exist "agente.db" (
+if not exist "!DADOS!\agente.db" (
   python -c "import sys; sys.path.insert(0,'.'); from db import inicializar; from core.privacidade import inicializar_lgpd; inicializar(); inicializar_lgpd()"
   if errorlevel 1 (
     echo   [X] Falha ao criar o banco. Veja a mensagem acima.
@@ -107,8 +112,8 @@ if not exist "agente.db" (
 )
 
 REM ---------- dados de exemplo (so na primeira vez) ----------
-if not exist ".primeira_execucao" (
-  echo feito > .primeira_execucao
+if not exist "!DADOS!\.primeira_execucao" (
+  echo feito > "!DADOS!\.primeira_execucao"
   set /p RESP="  Carregar dados de exemplo pra ver o painel funcionando? [S/n] "
   if /i not "!RESP!"=="n" (
     python demo.py >nul 2>&1

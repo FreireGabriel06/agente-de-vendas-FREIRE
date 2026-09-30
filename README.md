@@ -41,21 +41,22 @@ queue runs before it is approved.
 
 | Label | Meaning |
 |---|---|
-| **Verified locally** | Exercised with synthetic data on a temporary database: `demo.py`, in-process calls to the panel API, CLI commands |
+| **Tested** | Covered by the automated suite in `tests/`: synthetic data, a fake token endpoint, no network; runs in CI |
+| **Verified locally** | Exercised outside the automated suite, with synthetic data on a temporary database: `demo.py`, in-process calls to the panel API, CLI commands |
 | **Not validated** | Implemented, never run against the real external service |
 | **Simulated** | Placeholder behaviour instead of the real action |
 | **Planned** | Does not exist yet — see the roadmap |
 
-There is no automated test suite yet.
+What the automated suite covers, and how to run it, is under [Tests](#tests).
 
 | Area | Code | Status |
 |---|---|---|
-| Order state machine: validated transitions, history table | `core/estados.py` | Verified locally |
+| Order state machine: validated transitions, history table | `core/estados.py` | Tested through the demo flow and one refused transition |
 | Margin estimate with the Mercado Livre fee model: average commission (13% classic, 17% premium), reference unit-cost and shipping curves, R$ 79 threshold | `inteligencia/precificacao.py` | Verified locally — an estimate, not the real fee of each category |
-| Approval queue: purchases, buyer replies, price changes, listings | `core/aprovacao.py` | Verified locally for purchase orders |
+| Approval queue: purchases, buyer replies, price changes, listings | `core/aprovacao.py` | Tested for purchase orders |
 | Compliance rules before a purchase order is queued; approving a blocked item returns HTTP 409 | `core/conformidade.py`, `painel/app.py` | Verified locally with synthetic Amazon orders; with today's Mercado Livre data no rule can trigger |
-| Sending a purchase order to the supplier | `worker.py` | Simulated — writes a text file to `ordens_de_compra/` |
-| Buyer data encrypted on arrival (Fernet), masked in API responses, reveal endpoint logs each read | `core/privacidade.py`, `painel/app.py` | Verified locally |
+| Sending a purchase order to the supplier | `worker.py` | Simulated — writes a text file to `ordens_de_compra/` in the data folder |
+| Buyer data encrypted on arrival (Fernet), masked in API responses, reveal endpoint logs each read | `core/privacidade.py`, `painel/app.py` | Tested |
 | Retention purge; data-subject export and deletion | `core/privacidade.py` | Implemented, not exercised; only the purge has a panel button |
 | Web panel: queue with keyboard shortcuts (`j`/`k`, `a`, `r`, `c`), orders, niche research, pricing, LGPD log, events, connection setup | `painel/` | Verified locally (page and API functions, not in a browser) |
 | CLI | `cli.py` | Verified locally (`pendencias`, `preco`) |
@@ -65,15 +66,17 @@ There is no automated test suite yet.
 | Shopee: partner authorization with HMAC-signed calls, order listing | `conectores/shopee.py` | Not validated; used only by connection setup and test, not by the worker |
 | Amazon SP-API with Login with Amazon: order listing | `conectores/amazon.py` | Not validated; used only by the connection test, not by the worker |
 | Product and supplier registration | — | Planned — manual SQL today |
-| Panel login: one operator, server-side session, CSRF token in a header | `core/seguranca.py`, `painel/app.py` | Verified locally |
-| OAuth return: `state` created by the same panel session, single use, valid for 10 minutes; return pages escape their output and show fixed error messages | `core/seguranca.py`, `painel/app.py`, `painel/configurar.py` | Verified locally with a fake token endpoint |
-| Standalone executable | `agente.spec` | Not verified |
+| Panel login: one operator, server-side session, CSRF token in a header | `core/seguranca.py`, `painel/app.py` | Tested |
+| OAuth return: `state` created by the same panel session, single use, valid for 10 minutes; return pages escape their output and show fixed error messages | `core/seguranca.py`, `painel/app.py`, `painel/configurar.py` | Tested with a fake token endpoint |
+| Data folder for `.env`, database, key, tokens and purchase orders: `AGENTE_DADOS`, the executable's folder, or the project folder | `config.py` | Tested |
+| Standalone executable | `agente.spec` | Not verified — no build has been run; the rule that keeps data next to the executable is tested without one |
 
 ---
 
 ## Quick start
 
-Requires **Python 3.10 or newer** (checked with Python 3.14).
+Requires **Python 3.10 or newer** (checked with Python 3.14; CI runs the tests
+on 3.12 and 3.14).
 
 **Windows:** double-click `iniciar.bat`.
 
@@ -87,7 +90,9 @@ On the first run the script checks Python, creates `.venv`, installs
 `requirements.txt`, copies `.env.example` to `.env`, creates `agente.db`,
 generates the encryption key `.chave_lgpd` and offers demo data. It then runs
 `executar.py`, which starts the panel at `http://127.0.0.1:8777`, starts the
-worker and opens the browser.
+worker and opens the browser. `.env`, `agente.db` and `.chave_lgpd` go to the
+[data folder](#data-folder), which is the project folder unless
+`AGENTE_DADOS` is set.
 
 Manual start:
 
@@ -116,10 +121,69 @@ Before you rely on it:
 
 ---
 
+## Tests
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+python -m pytest -q
+```
+
+The suite runs in-process with FastAPI's `TestClient`; no server is started.
+Before any project module is imported, `tests/conftest.py` points
+`AGENTE_DADOS` at a new temporary folder and sets a freshly generated
+`CHAVE_LGPD`, fake marketplace credentials and `WORKER_ATIVO=false`, so the
+project's own `.env`, database, key and tokens are never opened. Each test gets
+its own database and data files. Proxy settings are switched off
+(`NO_PROXY=*`), and any connection or name lookup outside loopback fails the
+test.
+
+What it covers:
+
+- **Panel login:** password hashing, wrong password, lockout after five
+  attempts and the counter reset by a successful login, 401 for the API and a
+  redirect to `/login` for pages without a session, the 30-minute idle and
+  8-hour session limits, sessions ended by a password change, CSRF on
+  state-changing calls, logout, and the operator recorded when buyer data is
+  revealed and when an item is approved or refused.
+- **OAuth `state`:** valid, reused, missing, forged, from another session,
+  without a session, expired after 10 minutes and issued for another
+  provider; the cap on pending authorizations; HTML and marketplace responses
+  never echoed in messages; refusals logged without the `state` value; escaped
+  return pages; a single `/oauth/ml/retorno` route; the HTTP flow with two
+  sessions.
+- **Demo flow end to end:** margin, queue, approval, `COMPRA_ENVIADA`.
+- **Buyer data:** encrypted at rest, masked in API responses, each reveal logged.
+- **Data folder:** where `.env`, the database, the key, the tokens and the
+  purchase orders are read and written.
+
+**CI:** [`.github/workflows/tests.yml`](.github/workflows/tests.yml) runs
+`pytest -q` on Python 3.12 and 3.14 for every pull request and every push to
+`main`, with read-only repository permissions and every action pinned to a
+commit SHA.
+
+---
+
 ## Configuration
 
 Settings come from `.env`; `.env.example` is the template. Fill credentials
 locally and never commit `.env`.
+
+### Data folder
+
+`.env`, the database, `.chave_lgpd`, the OAuth token files and
+`ordens_de_compra/` live in the data folder, chosen in this order:
+
+1. the folder in the `AGENTE_DADOS` environment variable, created if missing;
+2. in a PyInstaller build, the folder of the executable;
+3. otherwise, the project folder.
+
+`AGENTE_DADOS` must be a real environment variable, set in the shell or the
+system. A line in `.env` has no effect, because `.env` itself is read from the
+data folder. `iniciar.bat` and `iniciar.sh` follow the same rule. Files that
+ship with the code, such as `.env.example` and `painel.html`, stay in the
+project folder.
+
+### Variables
 
 | Variables | Default | Purpose |
 |---|---|---|
@@ -136,7 +200,8 @@ locally and never commit `.env`.
 | `TETO_COMPRA_AUTOMATICA` | `300` | Purchases above this value are labelled `ACIMA DO TETO`; every purchase still needs approval |
 | `ALIQUOTA_IMPOSTO_PCT` | `4` | Estimated tax on sales (%) |
 | `PRAZO_FORNECEDOR_DIAS` | `5` | Default supplier lead time (days) |
-| `DB_PATH` | `agente.db` | SQLite database file |
+| `AGENTE_DADOS` | not set | [Data folder](#data-folder); read only from the real environment, never from `.env` |
+| `DB_PATH` | `agente.db` | SQLite database file; a relative path is resolved against the data folder |
 | `CHAVE_LGPD` | empty | Encryption key; when empty, `.chave_lgpd` is used |
 | `RETENCAO_PII_DIAS` | `1825` | Days before buyer data is purged |
 | `HOST_PAINEL` | `127.0.0.1` | Panel address; keep it while there is a single operator and no HTTPS |
@@ -166,7 +231,8 @@ with a live account yet.
   in Seller Central.
 
 **Testar conexão** calls the real API. Credentials and tokens are written to
-`.env`, `.token_ml.json` and `.token_shopee.json`, which git ignores.
+`.env`, `.token_ml.json` and `.token_shopee.json` in the data folder; git
+ignores all three.
 
 ---
 
@@ -201,7 +267,7 @@ database. API responses mask the name; the reveal endpoint logs every read.
 - Margins rely on average fees; confirm the real fees of each category.
 - The reveal endpoint fails for rows whose address field is not encrypted (demo rows and purged rows).
 - `PORTA_PAINEL` and `INTERVALO_WORKER` are ignored in `.env`; `MODO_SIMULACAO` does nothing.
-- No automated tests.
+- The tests use synthetic data and a fake token endpoint; nothing is tested against a live marketplace or in a browser.
 
 ---
 
@@ -211,7 +277,7 @@ database. API responses mask the name; the reveal endpoint logs every read.
 executar.py              entry point: panel and worker in one process
 worker.py                the cycle: import, margin, purchase orders, replies, tracking
 cli.py                   terminal commands
-config.py                settings loaded from .env
+config.py                settings loaded from .env; data folder
 db.py                    SQLite schema and connection
 demo.py                  synthetic demo data (wipes existing data)
 core/                    estados (state machine), aprovacao (queue),
@@ -223,6 +289,10 @@ painel/                  app.py (FastAPI routes), configurar.py (connections), p
 iniciar.bat, iniciar.sh  first-run setup and start
 organizar.py             rebuilds the folder layout when files were downloaded one by one
 agente.spec              PyInstaller build spec (not verified)
+tests/                   pytest suite; conftest.py isolates data and blocks the network
+requirements-dev.txt     test dependencies (pytest, httpx)
+pytest.ini               test discovery and import path
+.github/workflows/       CI: tests.yml
 ```
 
 ---

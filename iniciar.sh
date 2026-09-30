@@ -58,8 +58,12 @@ else
 fi
 
 # ---------- configuração ----------
-if [ ! -f ".env" ]; then
-  cp .env.example .env
+# .env, banco e chave ficam em AGENTE_DADOS, se definida no sistema; senão,
+# nesta pasta. Mesma regra do config.py.
+DADOS="${AGENTE_DADOS:-.}"
+mkdir -p "$DADOS"
+if [ ! -f "$DADOS/.env" ]; then
+  cp .env.example "$DADOS/.env"
   aviso "Criado .env a partir do modelo — ainda SEM credenciais."
   echo "    O painel sobe e funciona, mas não vai buscar pedido nenhum"
   echo "    até você preencher as chaves do marketplace no arquivo .env."
@@ -74,7 +78,7 @@ if [ ! -f "core/privacidade.py" ]; then
 fi
 
 # ---------- banco ----------
-if [ ! -f "agente.db" ]; then
+if [ ! -f "$DADOS/agente.db" ]; then
   if $PY -c "
 import sys; sys.path.insert(0,'.')
 from db import inicializar
@@ -91,8 +95,8 @@ inicializar(); inicializar_lgpd()
 fi
 
 # ---------- dados de exemplo (só na primeira execução, e só com terminal) ----------
-if [ ! -f ".primeira_execucao" ]; then
-  touch .primeira_execucao
+if [ ! -f "$DADOS/.primeira_execucao" ]; then
+  touch "$DADOS/.primeira_execucao"
   if [ -t 0 ]; then
     echo "  Carregar dados de exemplo pra você ver o painel funcionando?"
     read -r -p "  [S/n] " resp

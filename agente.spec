@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 # Gera o binário: pyinstaller agente.spec
-# O painel.html vai embutido; o .env fica FORA, lido da pasta de execução.
+# O painel.html vai embutido; o .env fica FORA, lido da pasta do executável
+# (config.DATA_DIR), onde também ficam o banco, a chave e os tokens.
 
 a = Analysis(
     ['executar.py'],

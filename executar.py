@@ -14,8 +14,9 @@ Para gerar o binário (.exe no Windows, executável no Linux/macOS):
     pip install pyinstaller
     pyinstaller agente.spec
 
-O binário sai em dist/. Ele carrega o .env da pasta onde for executado, então
-você distribui o executável e o .env lado a lado e não recompila pra trocar
+O binário sai em dist/. Ele lê o .env, e grava banco, chave e tokens, na pasta
+do próprio executável (ou em AGENTE_DADOS, se definida no sistema), então você
+distribui o executável e o .env lado a lado e não recompila pra trocar
 credencial.
 """
 import os

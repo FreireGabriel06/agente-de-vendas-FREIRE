@@ -31,10 +31,10 @@ import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from config import BASE_DIR
+from config import DATA_DIR
 from db import conectar, agora, registrar_evento
 
-ARQ_CHAVE = BASE_DIR / ".chave_lgpd"
+ARQ_CHAVE = DATA_DIR / ".chave_lgpd"
 
 # Prazo de guarda do dado pessoal, em dias. 5 anos cobre prescrição do CDC
 # (art. 27) e o prazo fiscal. Depois disso o PII vira lixo de risco.

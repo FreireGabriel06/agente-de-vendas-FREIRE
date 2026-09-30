@@ -13,10 +13,10 @@ from pathlib import Path
 
 import requests
 
-from config import config, BASE_DIR
+from config import config, DATA_DIR
 from db import registrar_evento
 
-ARQ_TOKEN = BASE_DIR / ".token_ml.json"
+ARQ_TOKEN = DATA_DIR / ".token_ml.json"
 
 
 class ErroMercadoLivre(Exception):

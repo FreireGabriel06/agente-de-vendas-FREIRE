@@ -18,13 +18,15 @@ import time
 import traceback
 from datetime import datetime, timedelta, timezone
 
-from config import config
+from config import config, DATA_DIR
 from db import conectar, agora, inicializar, registrar_evento
 from core import aprovacao, conformidade, privacidade
 from core.estados import Estado, transicionar
 from inteligencia import precificacao
 from conectores.mercadolivre import MercadoLivre, ErroMercadoLivre
 from atendimento.bot import processar_pergunta
+
+PASTA_ORDENS = DATA_DIR / "ordens_de_compra"
 
 
 # --------------------------------------------------------------- 1. Ingestão
@@ -283,7 +285,6 @@ def executor_compra(payload: dict) -> str:
     arquivo; troque por envio de e-mail (SMTP) ou WhatsApp Business API
     conforme o canal cadastrado no fornecedor.
     """
-    from pathlib import Path
     texto = (
         f"PEDIDO DE COMPRA\n"
         f"Fornecedor: {payload['fornecedor']}\n"
@@ -292,9 +293,8 @@ def executor_compra(payload: dict) -> str:
         f"Valor: R$ {payload['valor']:.2f}\n"
         f"Referência: {payload['marketplace']}#{payload['pedido_externo']}\n"
     )
-    destino = Path(config.db_path).parent / "ordens_de_compra"
-    destino.mkdir(exist_ok=True)
-    arquivo = destino / f"oc_{payload['pedido_id']}.txt"
+    PASTA_ORDENS.mkdir(parents=True, exist_ok=True)
+    arquivo = PASTA_ORDENS / f"oc_{payload['pedido_id']}.txt"
     arquivo.write_text(texto, encoding="utf-8")
 
     transicionar(payload["pedido_id"], Estado.COMPRA_ENVIADA,

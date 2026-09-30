@@ -5,15 +5,42 @@ no código, nenhuma credencial no git.
 Copie .env.example para .env e preencha.
 """
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# Código e arquivos que vêm com ele (.env.example, painel.html).
 BASE_DIR = Path(__file__).resolve().parent
+
+
+def _pasta_dados() -> Path:
+    """
+    Pasta dos arquivos de execução: .env, banco, chave LGPD, tokens OAuth e
+    ordens de compra.
+
+      1. AGENTE_DADOS, se existir no ambiente do sistema. Não vale no .env,
+         porque o .env é lido desta pasta.
+      2. A pasta do executável, no binário do PyInstaller. No modo onefile o
+         código roda de uma pasta temporária que some ao fechar; sem isso o
+         .env, a chave e o banco não ficariam ao lado do executável.
+      3. A pasta do código.
+    """
+    definida = os.environ.get("AGENTE_DADOS", "").strip()
+    if definida:
+        pasta = Path(definida).expanduser().resolve()
+        pasta.mkdir(parents=True, exist_ok=True)
+        return pasta
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return BASE_DIR
+
+
+DATA_DIR = _pasta_dados()
 
 
 def _carregar_env():
     """Loader mínimo de .env, sem dependência externa."""
-    caminho = BASE_DIR / ".env"
+    caminho = DATA_DIR / ".env"
     if not caminho.exists():
         return
     for linha in caminho.read_text(encoding="utf-8").splitlines():
@@ -25,6 +52,13 @@ def _carregar_env():
 
 
 _carregar_env()
+
+
+def _caminho_banco() -> str:
+    """DB_PATH relativo, como o do .env.example, conta a partir de DATA_DIR, e
+    não da pasta de onde o programa foi chamado."""
+    caminho = Path(os.getenv("DB_PATH") or "agente.db").expanduser()
+    return str(caminho if caminho.is_absolute() else DATA_DIR / caminho)
 
 
 @dataclass
@@ -81,7 +115,7 @@ class Config:
     ml: ConfigMercadoLivre = field(default_factory=ConfigMercadoLivre)
     amazon: ConfigAmazon = field(default_factory=ConfigAmazon)
     negocio: ConfigNegocio = field(default_factory=ConfigNegocio)
-    db_path: str = os.getenv("DB_PATH", str(BASE_DIR / "agente.db"))
+    db_path: str = _caminho_banco()
     modo_simulacao: bool = os.getenv("MODO_SIMULACAO", "true").lower() == "true"
 
 
