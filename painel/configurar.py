@@ -28,10 +28,10 @@ from urllib.parse import urlencode, urlparse, parse_qs
 
 import requests
 
-from config import BASE_DIR, config
+from config import BASE_DIR, DATA_DIR, config
 from core import seguranca
 
-ARQ_ENV = BASE_DIR / ".env"
+ARQ_ENV = DATA_DIR / ".env"
 
 # Porta padrão do painel. O ML exige HTTPS na URI de redirect, e o painel roda
 # em HTTP local — então registramos https://localhost:PORTA/... e o navegador

@@ -26,11 +26,11 @@ from pathlib import Path
 
 import requests
 
-from config import BASE_DIR
+from config import DATA_DIR
 from db import registrar_evento
 import os
 
-ARQ_TOKEN = BASE_DIR / ".token_shopee.json"
+ARQ_TOKEN = DATA_DIR / ".token_shopee.json"
 
 HOST_PROD = "https://partner.shopeemobile.com"
 HOST_TESTE = "https://partner.test-stable.shopeemobile.com"
