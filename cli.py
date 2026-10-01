@@ -14,10 +14,16 @@ Painel de comando do robô.
   python cli.py rodar --intervalo 300          roda em laço contínuo
   python cli.py eventos                        últimos alertas
   python cli.py operador --usuario ana         cria o operador ou troca a senha
+  python cli.py cofre migrar                   copia segredos do .env e tokens antigos pro cofre
+  python cli.py cofre rotacionar               recifra o cofre com a chave atual
+  python cli.py cofre listar                   o que está no cofre (nomes, nunca valores)
+  python cli.py cofre apagar mercadolivre refresh_token   revoga uma credencial
+  python cli.py cofre apagar --tudo            chave perdida: apaga tudo, sem a chave (pede confirmação)
 """
 import argparse
 import sys
 
+from config import avisar_pasta_de_dados
 from db import inicializar, conectar
 from core import aprovacao
 from inteligencia import precificacao, tendencias
@@ -108,6 +114,88 @@ def cmd_operador(args):
     print(seguranca.definir_operador(args.usuario, senha) + f": {args.usuario}")
 
 
+def _nomes(itens) -> str:
+    return ", ".join(itens) if itens else "—"
+
+
+def cmd_cofre(args):
+    """Cofre de credenciais. Nunca imprime valor nem chave."""
+    from core import cofre
+
+    inicializar()
+    cofre.inicializar_cofre()
+
+    if args.acao == "migrar":
+        from conectores import mercadolivre, shopee
+        from painel import configurar
+
+        arquivo_env = configurar.ARQ_ENV
+        rel = cofre.migrar(arquivo_env, {mercadolivre.PROVEDOR: mercadolivre.ARQ_TOKEN,
+                                         shopee.PROVEDOR: shopee.ARQ_TOKEN})
+        print("Cofre de credenciais: migração. O .env e os arquivos de token não são alterados.\n")
+        if not (rel.linhas_env or rel.arquivos):
+            print("Nada para migrar: o .env não tem segredo preenchido e não há arquivo de token antigo.")
+            return
+        print(f"  Copiados agora e conferidos por leitura: {_nomes(rel.copiados)}")
+        print(f"  Já estavam no cofre com o mesmo valor:   {_nomes(rel.ja_no_cofre)}")
+        print(f"  No cofre com outro valor, que é o que vale: {_nomes(rel.diferentes)}")
+        print(f"  Tokens de arquivo antigo no cofre:        {_nomes(a.name for a in rel.arquivos)}")
+        if rel.no_sistema:
+            print(f"  Também no ambiente do sistema, que vale antes do cofre: {_nomes(rel.no_sistema)}")
+        print("\nDepois de testar as conexões no painel, você pode apagar à mão:")
+        if rel.linhas_env:
+            print(f"  no arquivo {arquivo_env}, as linhas: {_nomes(rel.linhas_env)}")
+        for arquivo in rel.arquivos:
+            print(f"  o arquivo {arquivo}")
+        print(f"\nChave do cofre em uso: {cofre.origem_da_chave() or '(nenhuma ainda)'}. "
+              "Faça backup dela: sem a chave, é preciso reconectar os marketplaces e "
+              "digitar os segredos de novo.")
+        return
+
+    if args.acao == "rotacionar":
+        total = cofre.rotacionar()
+        print(f"{total} credencial(is) recifrada(s) com a chave atual (a primeira de "
+              f"{cofre.VARIAVEL_CHAVE} ou de {cofre.ARQ_CHAVE.name}).")
+        if total and cofre.quantidade_de_chaves() > 1:
+            print("A chave antiga já pode sair. Guarde o backup da chave nova.")
+        return
+
+    if args.acao == "listar":
+        itens = cofre.listar()
+        if not itens:
+            print("Cofre vazio.")
+        for item in itens:
+            print(f"  {item['provedor']:<14} {item['nome']:<18} atualizado em {item['atualizado_em']}")
+        return
+
+    if args.acao == "apagar" and args.tudo:
+        if args.provedor or args.nome:
+            raise ValueError("Use --tudo sozinho, ou informe PROVEDOR e NOME sem --tudo.")
+        total = len(cofre.listar())
+        if not total:
+            print("Cofre vazio.")
+            return
+        print(f"Isto apaga as {total} credencial(is) do cofre, sem precisar da chave. É a "
+              "saída quando a chave se perdeu: depois será preciso reconectar os "
+              "marketplaces e digitar os segredos de novo no painel.")
+        if input("Digite APAGAR para confirmar: ").strip() != "APAGAR":
+            print("Nada foi apagado.")
+            return
+        apagadas = cofre.apagar_tudo()
+        print(f"{apagadas} credencial(is) apagada(s) do cofre. A chave "
+              f"({cofre.origem_da_chave() or 'uma nova, criada na próxima gravação'}) "
+              "vale para as próximas gravações. Revogue no portal do marketplace o que "
+              "possa ter vazado.")
+        return
+
+    if args.acao == "apagar":
+        if cofre.apagar(args.provedor, args.nome):
+            print(f"Apagado do cofre: {args.provedor}/{args.nome}. Revogue também no portal "
+                  "do marketplace, se a credencial vazou.")
+        else:
+            print(f"Não havia {args.provedor}/{args.nome} no cofre.")
+
+
 def cmd_eventos(args):
     with conectar() as conn:
         linhas = conn.execute(
@@ -147,7 +235,20 @@ def main():
     op = sub.add_parser("operador"); op.add_argument("--usuario", required=True)
     op.set_defaults(func=cmd_operador)
 
+    co = sub.add_parser("cofre", help="cofre de credenciais")
+    acoes = co.add_subparsers(dest="acao", required=True)
+    acoes.add_parser("migrar", help="copia segredos do .env e tokens antigos para o cofre")
+    acoes.add_parser("rotacionar", help="recifra tudo com a chave atual")
+    acoes.add_parser("listar", help="nomes e datas, nunca valores")
+    ap = acoes.add_parser("apagar", help="remove uma credencial do cofre, ou todas com --tudo")
+    ap.add_argument("provedor", nargs="?"); ap.add_argument("nome", nargs="?")
+    ap.add_argument("--tudo", action="store_true",
+                    help="apaga todas as credenciais sem precisar da chave (pede confirmação)")
+    co.set_defaults(func=cmd_cofre)
+
     args = p.parse_args()
+    # Antes de qualquer gravação: sem AGENTE_DADOS, diz qual pasta vai ser usada.
+    avisar_pasta_de_dados()
     try:
         args.func(args)
     except Exception as e:

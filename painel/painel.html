@@ -575,8 +575,10 @@ async function salvarConfig(prov){
   if (!Object.keys(corpo).length){ alert('Preencha pelo menos um campo.'); return; }
   const r = await fetch('/api/configuracao/salvar',{method:'POST',
     headers:{'Content-Type':'application/json'},body:JSON.stringify(corpo)});
-  mostrarTeste(prov, r.ok, r.ok ? 'Chaves gravadas no .env. Agora clique em autorizar.'
-                                : 'Não deu pra gravar.');
+  const d = await r.json().catch(() => ({}));
+  mostrarTeste(prov, r.ok, r.ok ? ['Chaves gravadas; os segredos ficam no cofre cifrado. '
+                                   + 'Agora clique em autorizar.', d.aviso].filter(Boolean).join(' ')
+                                : (d.detail || 'Não deu pra gravar.'));
   if (r.ok) carregarConfig();
 }
 

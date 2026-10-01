@@ -13,7 +13,7 @@ import urllib.parse
 import pytest
 
 from apoio import cabecalho
-from core import seguranca
+from core import cofre, seguranca
 from db import conectar
 from painel import app as modulo_app
 from painel import configurar
@@ -112,8 +112,12 @@ def test_state_valido_troca_uma_vez_com_pkce(token, isolamento):
     desafio = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
     assert desafio == parametros(url)["code_challenge"][0]
     assert parametros(url)["code_challenge_method"] == ["S256"]
-    # O refresh token novo foi gravado no .env da pasta de dados do teste.
-    assert "ML_REFRESH_TOKEN=rt-falso" in (isolamento / ".env").read_text(encoding="utf-8")
+    # Os tokens novos foram para o cofre; o .env recebe só o que não é segredo.
+    assert cofre.ler("mercadolivre", "refresh_token") == "rt-falso"
+    assert cofre.ler("mercadolivre", "access_token") == "at-falso"
+    env = (isolamento / ".env").read_text(encoding="utf-8")
+    assert "rt-falso" not in env and "at-falso" not in env
+    assert "ML_SELLER_ID=4242" in env
 
 
 def test_state_reutilizado_e_recusado(token):

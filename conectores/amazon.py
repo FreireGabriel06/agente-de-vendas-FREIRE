@@ -26,6 +26,7 @@ import time
 import requests
 
 from config import config
+from core import cofre
 from db import registrar_evento
 
 URL_LWA = "https://api.amazon.com/auth/o2/token"
@@ -46,7 +47,7 @@ class Amazon:
             raise ErroAmazon(
                 "Credenciais da Amazon ausentes. Você precisa de uma conta "
                 "Seller Central aprovada e de um app registrado no Developer "
-                "Central antes de preencher AMZ_* no .env"
+                "Central antes de salvar as credenciais AMZ_* no painel"
             )
         r = requests.post(URL_LWA, data={
             "grant_type": "refresh_token",
@@ -63,8 +64,12 @@ class Amazon:
 
     @property
     def token(self) -> str:
-        if not self._access_token or time.time() >= self._expira_em:
-            self._renovar()
+        # Secret e refresh token vêm do cofre na hora do uso (config.amazon).
+        try:
+            if not self._access_token or time.time() >= self._expira_em:
+                self._renovar()
+        except cofre.ErroCofre as e:
+            raise ErroAmazon(str(e)) from None
         return self._access_token
 
     def _req(self, metodo: str, caminho: str, **kwargs):

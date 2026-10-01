@@ -4,6 +4,7 @@ import os
 import socket
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -60,13 +61,15 @@ def test_arquivos_de_execucao_ficam_na_pasta_de_dados(tmp_path):
     script = (
         "import json, config, worker\n"
         "from painel import configurar\n"
-        "from core import privacidade\n"
+        "from core import cofre, privacidade\n"
         "from conectores import mercadolivre, shopee\n"
         "print(json.dumps({\n"
         "    'DATA_DIR': str(config.DATA_DIR), 'BASE_DIR': str(config.BASE_DIR),\n"
         "    'margem': config.config.negocio.margem_minima_pct,\n"
         "    'banco': config.config.db_path, 'env': str(configurar.ARQ_ENV),\n"
-        "    'chave': str(privacidade.ARQ_CHAVE), 'token_ml': str(mercadolivre.ARQ_TOKEN),\n"
+        "    'chave': str(privacidade.ARQ_CHAVE), 'chave_cofre': str(cofre.ARQ_CHAVE),\n"
+        "    'trava_tokens': str(cofre.ARQ_TRAVA),\n"
+        "    'token_ml': str(mercadolivre.ARQ_TOKEN),\n"
         "    'token_shopee': str(shopee.ARQ_TOKEN), 'ordens': str(worker.PASTA_ORDENS),\n"
         "}))\n"
     )
@@ -84,13 +87,137 @@ def test_arquivos_de_execucao_ficam_na_pasta_de_dados(tmp_path):
     assert {nome: Path(c) for nome, c in caminhos.items()} == {
         "env": dados / ".env",
         "chave": dados / ".chave_lgpd",
+        "chave_cofre": dados / ".chave_cofre",
+        "trava_tokens": dados / ".trava_tokens",
         "token_ml": dados / ".token_ml.json",
         "token_shopee": dados / ".token_shopee.json",
         "ordens": dados / "ordens_de_compra",
     }
 
 
+# ------------------------------------------ aviso da pasta antes de gravar
+
+class SaidaVigiada:
+    """Faz as vezes da saída de erro e anota, na ordem, o que foi escrito."""
+
+    def __init__(self, ordem: list):
+        self.ordem = ordem
+
+    def write(self, texto):
+        if texto.strip():
+            self.ordem.append(("aviso", texto))
+        return len(texto)
+
+    def flush(self):
+        pass
+
+
+def test_cli_sem_agente_dados_diz_a_pasta_antes_de_gravar(monkeypatch):
+    import cli
+
+    ordem = []
+    inicializar = cli.inicializar
+
+    def inicializar_vigiado():  # a primeira gravação do comando
+        ordem.append(("gravação", ""))
+        inicializar()
+
+    monkeypatch.setattr(cli, "inicializar", inicializar_vigiado)
+    monkeypatch.setattr(sys, "stderr", SaidaVigiada(ordem))
+    monkeypatch.setattr(sys, "argv", ["cli.py", "cofre", "listar"])
+    monkeypatch.delenv("AGENTE_DADOS")
+
+    cli.main()
+
+    assert [tipo for tipo, _ in ordem[:2]] == ["aviso", "gravação"]
+    assert f"Pasta de dados: {config.DATA_DIR} (AGENTE_DADOS não definida)" in ordem[0][1]
+
+
+def test_cli_com_agente_dados_nao_repete_a_pasta(monkeypatch, capsys):
+    import cli
+
+    monkeypatch.setattr(sys, "argv", ["cli.py", "cofre", "listar"])
+    cli.main()
+    assert "Pasta de dados" not in capsys.readouterr().err
+
+
+def test_worker_sem_agente_dados_diz_a_pasta_antes_do_laco(monkeypatch, capsys):
+    import worker
+
+    antes_do_laco = []
+    monkeypatch.setattr(worker, "rodar", lambda *a, **k: antes_do_laco.append(capsys.readouterr().err))
+    monkeypatch.delenv("AGENTE_DADOS")
+
+    worker.principal()
+
+    assert len(antes_do_laco) == 1
+    assert f"Pasta de dados: {config.DATA_DIR} (AGENTE_DADOS não definida)" in antes_do_laco[0]
+
+
 # ------------------------------------------------------- travas dos testes
+
+def test_trava_dos_testes_recusa_a_pasta_do_repositorio(tmp_path):
+    from apoio import pasta_de_teste_recusada
+
+    teste, outra = tmp_path / "dados", tmp_path / "outra"
+    casos = [
+        (teste, teste / "agente.db", None),
+        (RAIZ, RAIZ / "agente.db", "a pasta de dados é a do repositório"),
+        (RAIZ, teste / "agente.db", "a pasta de dados é a do repositório"),
+        (RAIZ / "tests", teste / "agente.db", "a pasta de dados é a do repositório"),
+        # DB_PATH absoluto apontando para o repositório
+        (teste, RAIZ / "agente.db", "o banco está na pasta do repositório"),
+        (outra, outra / "agente.db", "o projeto não está usando a pasta de teste"),
+        (teste, outra / "agente.db", "o projeto não está usando a pasta de teste"),
+    ]
+    for pasta, banco, motivo in casos:
+        recusa = pasta_de_teste_recusada(pasta, banco, teste, RAIZ)
+        if motivo is None:
+            assert recusa is None
+        else:
+            assert recusa is not None and recusa.startswith(motivo), (pasta, banco, recusa)
+
+
+# Importa o conftest de verdade com um config falso no lugar do projeto: nada
+# da pasta do repositório é lido nem gravado. "repositorio": o DATA_DIR é a
+# raiz do projeto; "teste": segue o AGENTE_DADOS que o conftest define.
+CONFTEST_COM_CONFIG_FALSO = textwrap.dedent("""
+    import os, shutil, sys, types
+    from pathlib import Path
+
+    raiz = Path(sys.argv[1])
+
+    def __getattr__(nome):
+        pasta = raiz if sys.argv[2] == "repositorio" else Path(os.environ["AGENTE_DADOS"])
+        if nome == "DATA_DIR":
+            return pasta
+        if nome == "config":
+            return types.SimpleNamespace(db_path=str(pasta / "agente.db"))
+        raise AttributeError(nome)
+
+    falso = types.ModuleType("config")
+    falso.__getattr__ = __getattr__
+    sys.modules["config"] = falso
+    sys.path.insert(0, str(raiz / "tests"))
+    import conftest
+    shutil.rmtree(conftest.PASTA_DADOS, ignore_errors=True)
+    print("coleta liberada")
+""")
+
+
+@pytest.mark.parametrize("pasta", ["repositorio", "teste"])
+def test_conftest_aborta_na_importacao_se_a_pasta_for_a_do_repositorio(pasta):
+    ambiente = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONIOENCODING": "utf-8"}
+    feito = subprocess.run([sys.executable, "-c", CONFTEST_COM_CONFIG_FALSO, str(RAIZ), pasta],
+                           cwd=RAIZ, env=ambiente, capture_output=True, text=True,
+                           encoding="utf-8", timeout=120)
+    if pasta == "teste":
+        assert feito.returncode == 0 and "coleta liberada" in feito.stdout, feito.stderr
+    else:
+        assert feito.returncode != 0 and "coleta liberada" not in feito.stdout
+        assert ("ABORTADO antes de qualquer teste: a pasta de dados é a do repositório"
+                in feito.stderr), feito.stderr
+
 
 def test_testes_nao_usam_a_pasta_do_projeto(isolamento):
     assert config.DATA_DIR != config.BASE_DIR

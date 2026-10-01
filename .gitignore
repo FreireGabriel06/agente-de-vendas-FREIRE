@@ -107,6 +107,11 @@ desktop.ini
 # ---------------------------------------------------------------
 # LGPD encryption key (Fernet). It decrypts buyer PII. Never commit.
 .chave_lgpd
+# Credential vault key (Fernet). It decrypts marketplace tokens and secrets. Never commit.
+.chave_cofre
+# Empty lock files (one per marketplace) that keep token renewals one at a time across processes.
+.trava_tokens.*
+# Legacy plaintext token files (before the credential vault). Never commit.
 .token_ml.json
 .token_shopee.json
 ordens_de_compra/

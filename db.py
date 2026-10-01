@@ -120,8 +120,10 @@ def agora() -> str:
 
 
 @contextmanager
-def conectar():
-    conn = sqlite3.connect(config.db_path)
+def conectar(espera: float = 5.0):
+    """espera: segundos aguardando um banco ocupado por outro processo antes
+    de desistir com 'database is locked' (padrão do sqlite3: 5)."""
+    conn = sqlite3.connect(config.db_path, timeout=espera)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     try:
