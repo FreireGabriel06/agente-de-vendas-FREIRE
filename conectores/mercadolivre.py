@@ -3,19 +3,28 @@ Conector do Mercado Livre.
 
 O token de acesso do ML vale 6 horas. O refresh token é de uso único: cada
 refresh devolve um novo, e se você perder o novo, perdeu o acesso e precisa
-refazer o fluxo OAuth no navegador. Por isso o refresh é persistido em disco
-assim que chega — este é o erro que mais derruba integração de ML em
-produção.
+refazer o fluxo OAuth no navegador. Por isso:
+
+  - antes de gastar o refresh, o cofre confere se aceitaria o novo;
+  - uma renovação de cada vez (cofre.trava_de_tokens), e quem esperou a vez
+    relê o cofre antes de mandar o refresh, que pode já ter sido gasto;
+  - o par novo vai para a memória do processo e depois para o cofre cifrado
+    (cofre.guardar_tokens); se o banco falhar, o token segue valendo da
+    memória. Este é o erro que mais derruba integração de ML em produção.
+
+O antigo .token_ml.json, em texto puro, só é lido uma vez, para importar os
+tokens ao cofre. Ele nunca é apagado nem alterado por aqui.
 """
-import json
 import time
-from pathlib import Path
 
 import requests
 
 from config import config, DATA_DIR
-from db import registrar_evento
+from core import cofre
 
+PROVEDOR = "mercadolivre"
+
+# Legado: só lido para importar ao cofre, nunca escrito.
 ARQ_TOKEN = DATA_DIR / ".token_ml.json"
 
 
@@ -23,57 +32,99 @@ class ErroMercadoLivre(Exception):
     pass
 
 
+def guardar_tokens(dados: dict) -> int:
+    """Guarda o par que o ML acabou de emitir, sem exceção antes de ele estar
+    guardado: memória do processo, depois o cofre, numa transação. Devolve a
+    validade (epoch). Usado pela renovação e pela troca do código de
+    autorização."""
+    try:
+        segundos = int(dados.get("expires_in", 21600))
+    except (TypeError, ValueError):
+        segundos = 21600
+    expira_em = int(time.time()) + segundos - 300
+    novos = {n: str(dados[n]) for n in ("access_token", "refresh_token") if dados.get(n)}
+    if "access_token" not in novos:
+        expira_em = 0  # sem access token novo, a próxima chamada renova
+    cofre.guardar_tokens(PROVEDOR, {**novos, "expira_em": str(expira_em)})
+    if len(novos) < 2:
+        raise ErroMercadoLivre("A resposta do Mercado Livre veio sem access_token "
+                               "ou sem refresh_token.")
+    return expira_em
+
+
 class MercadoLivre:
     def __init__(self, cfg=None):
         self.cfg = cfg or config.ml
         self._access_token = None
         self._expira_em = 0
-        self._carregar_token()
+        # Nada é lido do cofre aqui: um cofre com problema vira ErroMercadoLivre
+        # na primeira chamada, que o worker registra, em vez de derrubar o ciclo.
+        self._carregado = False
 
     # ------------------------------------------------------------- OAuth
 
     def _carregar_token(self):
-        if ARQ_TOKEN.exists():
-            dados = json.loads(ARQ_TOKEN.read_text())
-            self._access_token = dados.get("access_token")
-            self._expira_em = dados.get("expira_em", 0)
-            if dados.get("refresh_token"):
-                self.cfg.refresh_token = dados["refresh_token"]
-
-    def _salvar_token(self, dados: dict):
-        ARQ_TOKEN.write_text(json.dumps({
-            "access_token": dados["access_token"],
-            "refresh_token": dados["refresh_token"],
-            "expira_em": int(time.time()) + dados.get("expires_in", 21600) - 300,
-        }, indent=2))
-        ARQ_TOKEN.chmod(0o600)
+        if self._carregado:
+            return
+        cofre.importar_legado(PROVEDOR, ARQ_TOKEN)
+        self._access_token = cofre.ler(PROVEDOR, "access_token")
+        self._expira_em = cofre.ler_validade(PROVEDOR)
+        self._carregado = True
 
     def _renovar(self):
-        if not self.cfg.configurado:
-            raise ErroMercadoLivre(
-                "Credenciais do ML ausentes. Preencha ML_CLIENT_ID, "
-                "ML_CLIENT_SECRET e ML_REFRESH_TOKEN no .env"
-            )
-        r = requests.post(f"{self.cfg.base_url}/oauth/token", data={
-            "grant_type": "refresh_token",
-            "client_id": self.cfg.client_id,
-            "client_secret": self.cfg.client_secret,
-            "refresh_token": self.cfg.refresh_token,
-        }, timeout=20)
-        if r.status_code != 200:
-            raise ErroMercadoLivre(f"Falha ao renovar token: {r.status_code} {r.text[:200]}")
-        dados = r.json()
-        self._access_token = dados["access_token"]
-        self.cfg.refresh_token = dados["refresh_token"]
-        self._expira_em = int(time.time()) + dados.get("expires_in", 21600) - 300
-        self._salvar_token(dados)
-        registrar_evento("info", "mercadolivre", "Token renovado")
+        """Troca o access token que esta instância tem por um novo."""
+        with cofre.trava_de_tokens(PROVEDOR):
+            cofre.regravar_pendente(PROVEDOR)
+            self._carregar_token()
+            # Quem esperou a vez relê o cofre: se outra thread ou processo já
+            # renovou, o refresh que esta instância conhecia foi gasto.
+            recusado = self._access_token
+            guardado = cofre.ler(PROVEDOR, "access_token")
+            validade = cofre.ler_validade(PROVEDOR)
+            if guardado and guardado != recusado and time.time() < validade:
+                self._access_token, self._expira_em = guardado, validade
+                return
+            if not self.cfg.configurado:
+                raise ErroMercadoLivre(
+                    "Credenciais do ML ausentes. Salve o App ID e a Secret Key no painel "
+                    "e autorize a conta (ou defina ML_CLIENT_ID, ML_CLIENT_SECRET e "
+                    "ML_REFRESH_TOKEN no ambiente)"
+                )
+            # O refresh vale uma vez só: se o cofre não aceitaria o novo, para aqui.
+            cofre.conferir()
+            r = requests.post(f"{self.cfg.base_url}/oauth/token", data={
+                "grant_type": "refresh_token",
+                "client_id": self.cfg.client_id,
+                "client_secret": self.cfg.client_secret,
+                "refresh_token": self.cfg.refresh_token,
+            }, timeout=20)
+            if r.status_code != 200:
+                raise ErroMercadoLivre(f"Falha ao renovar token: {r.status_code} {r.text[:200]}")
+            dados = r.json()
+            # O refresh antigo acabou de deixar de valer: o par novo fica na
+            # memória do processo e vai para o cofre, sem exceção no caminho.
+            self._expira_em = guardar_tokens(dados)
+            self._access_token = dados["access_token"]
+            cofre.avisar("info", "mercadolivre", "Token renovado")
 
-    @property
-    def token(self) -> str:
+    def _garantir_token(self) -> str:
+        cofre.regravar_pendente(PROVEDOR)
+        self._carregar_token()
         if not self._access_token or time.time() >= self._expira_em:
             self._renovar()
         return self._access_token
+
+    def _pelo_cofre(self, funcao):
+        """Problema no cofre chega a quem chama como erro do conector, com a
+        mensagem do cofre, que não traz valor nem chave."""
+        try:
+            return funcao()
+        except cofre.ErroCofre as e:
+            raise ErroMercadoLivre(str(e)) from None
+
+    @property
+    def token(self) -> str:
+        return self._pelo_cofre(self._garantir_token)
 
     # --------------------------------------------------------- HTTP base
 
@@ -83,7 +134,7 @@ class MercadoLivre:
         r = requests.request(metodo, f"{self.cfg.base_url}{caminho}",
                              headers=headers, timeout=25, **kwargs)
         if r.status_code == 401:
-            self._renovar()
+            self._pelo_cofre(self._renovar)
             headers["Authorization"] = f"Bearer {self._access_token}"
             r = requests.request(metodo, f"{self.cfg.base_url}{caminho}",
                                  headers=headers, timeout=25, **kwargs)

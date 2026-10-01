@@ -27,7 +27,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from db import conectar, inicializar, registrar_evento
-from core import aprovacao, conformidade, privacidade, seguranca
+from core import aprovacao, cofre, conformidade, privacidade, seguranca
 from core.estados import Estado, ESTADOS_CRITICOS, historico
 from inteligencia import precificacao, tendencias
 
@@ -287,6 +287,8 @@ def api_url_autorizacao(provedor: str, request: Request):
         raise HTTPException(400, "Provedor desconhecido.")
     except ValueError as e:
         raise HTTPException(400, str(e))
+    except cofre.ErroCofre as e:
+        raise HTTPException(503, str(e))
 
 
 @app.post("/api/configuracao/concluir-ml")
@@ -298,7 +300,7 @@ async def api_concluir_ml(request: Request):
         d = configurar.ml_trocar_code(corpo.get("retorno", ""), request.state.sid)
         registrar_evento("info", "configuracao", f"Mercado Livre conectado (vendedor {d['seller_id']})")
         return {"ok": True, "detalhe": f"Conectado. Vendedor {d['seller_id']}."}
-    except ValueError as e:
+    except (ValueError, cofre.ErroCofre) as e:
         return {"ok": False, "detalhe": str(e)}
     except Exception as e:
         return {"ok": False, "detalhe": _falha_generica("Mercado Livre", e)}
@@ -315,7 +317,7 @@ def oauth_ml_retorno(request: Request, code: str = "", error: str = ""):
     try:
         d = configurar.ml_trocar_code(str(request.url), request.state.sid)
         return _pagina_retorno(True, f"Mercado Livre conectado. Vendedor {d['seller_id']}.")
-    except ValueError as e:
+    except (ValueError, cofre.ErroCofre) as e:
         return _pagina_retorno(False, str(e))
     except Exception as e:
         return _pagina_retorno(False, _falha_generica("Mercado Livre", e))
@@ -323,7 +325,8 @@ def oauth_ml_retorno(request: Request, code: str = "", error: str = ""):
 
 @app.post("/api/configuracao/salvar")
 async def api_salvar_config(request: Request):
-    """Grava as chaves no .env. Só strings de aplicação — nunca senha."""
+    """Grava as chaves de aplicação — nunca senha. Segredo vai para o cofre
+    cifrado, o resto para o .env. A resposta e o evento levam só os nomes."""
     from painel import configurar
     corpo = await request.json()
     permitidas = {
@@ -333,12 +336,23 @@ async def api_salvar_config(request: Request):
         "ANTHROPIC_API_KEY", "MARGEM_MINIMA_PCT", "TETO_COMPRA_AUTOMATICA",
         "ALIQUOTA_IMPOSTO_PCT", "PRAZO_FORNECEDOR_DIAS",
     }
-    chaves = {k: str(v) for k, v in corpo.items() if k in permitidas and str(v).strip()}
+    chaves = {k: str(v).strip() for k, v in corpo.items() if k in permitidas and str(v).strip()}
     if not chaves:
         raise HTTPException(400, "Nada para salvar.")
-    configurar.gravar_env(chaves)
-    registrar_evento("info", "configuracao", f"Chaves atualizadas: {', '.join(chaves)}")
-    return {"ok": True, "salvas": sorted(chaves)}
+    try:
+        destino = configurar.gravar_env(chaves)
+    except cofre.ErroCofre as e:
+        raise HTTPException(503, str(e))
+    registrar_evento("info", "configuracao", f"Chaves atualizadas: {', '.join(sorted(chaves))}")
+    avisos = []
+    if destino["sobrepostos"]:
+        avisos.append(f"{', '.join(destino['sobrepostos'])} também está no ambiente do "
+                      "sistema, que vale antes do cofre.")
+    if destino["em_texto_no_env"]:
+        avisos.append(f"O .env ainda tem {', '.join(destino['em_texto_no_env'])} em texto puro. "
+                      "O cofre já vale; apague essas linhas do .env à mão.")
+    return {"ok": True, "salvas": sorted(chaves), "no_cofre": destino["cofre"],
+            "aviso": " ".join(avisos)}
 
 
 @app.get("/oauth/shopee/iniciar")
@@ -347,7 +361,7 @@ def oauth_shopee_iniciar(request: Request):
     from painel import configurar
     try:
         return RedirectResponse(configurar.shopee_url_autorizacao(_redirect_uri(request, "shopee")))
-    except ValueError as e:
+    except (ValueError, cofre.ErroCofre) as e:
         return HTMLResponse(_pagina_retorno(False, str(e)), status_code=400)
 
 
@@ -360,6 +374,8 @@ def oauth_shopee_retorno(code: str = "", shop_id: str = ""):
     try:
         d = configurar.shopee_trocar_code(code, shop_id)
         return _pagina_retorno(True, f"Shopee conectada. Loja {d['shop_id']}.")
+    except cofre.ErroCofre as e:
+        return _pagina_retorno(False, str(e))
     except Exception as e:
         return _pagina_retorno(False, _falha_generica("Shopee", e))
 
@@ -484,3 +500,4 @@ def preparar():
     inicializar()
     privacidade.inicializar_lgpd()
     seguranca.inicializar_seguranca()
+    cofre.inicializar_cofre()

@@ -18,7 +18,7 @@ import time
 import traceback
 from datetime import datetime, timedelta, timezone
 
-from config import config, DATA_DIR
+from config import config, DATA_DIR, avisar_pasta_de_dados
 from db import conectar, agora, inicializar, registrar_evento
 from core import aprovacao, conformidade, privacidade
 from core.estados import Estado, transicionar
@@ -323,6 +323,12 @@ EXECUTORES = {
 
 # ------------------------------------------------------------------ Laço
 
+def _pilha(erro: Exception) -> str:
+    """Arquivo, linha e código de cada quadro, sem a mensagem da exceção."""
+    quadros = traceback.format_list(traceback.extract_tb(erro.__traceback__))
+    return f"{type(erro).__name__}\n{''.join(quadros)}"[-2000:]
+
+
 def ciclo() -> dict:
     """Uma passada completa. Cada etapa é isolada: falha numa não para as outras."""
     inicializar()
@@ -339,9 +345,11 @@ def ciclo() -> dict:
         try:
             resumo[nome] = func()
         except Exception as e:
-            resumo[nome] = f"erro: {e}"
-            registrar_evento("erro", "worker", f"Etapa '{nome}' falhou: {e}",
-                             {"traceback": traceback.format_exc()[:2000]})
+            # Só o tipo e onde falhou, nunca a mensagem: a de uma exceção
+            # inesperada pode repetir um valor decifrado do cofre.
+            resumo[nome] = f"erro: {type(e).__name__}"
+            registrar_evento("erro", "worker", f"Etapa '{nome}' falhou: {type(e).__name__}",
+                             {"traceback": _pilha(e)})
 
     resumo["pendentes_aprovacao"] = len(aprovacao.pendentes())
     return resumo
@@ -355,5 +363,12 @@ def rodar(intervalo_seg: int = 300):
         time.sleep(intervalo_seg)
 
 
-if __name__ == "__main__":
+def principal():
+    """`python worker.py`: sem AGENTE_DADOS, diz qual pasta de dados vai ser
+    usada antes da primeira gravação, e roda o laço."""
+    avisar_pasta_de_dados()
     rodar()
+
+
+if __name__ == "__main__":
+    principal()

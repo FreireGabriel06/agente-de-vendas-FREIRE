@@ -11,12 +11,16 @@ Você faz só duas coisas manuais, e nenhuma delas envolve me passar senha:
   2. Cola essas duas aqui e clica em autorizar.
 
 O resto — gerar a URL assinada, receber o code no retorno, trocar por
-access/refresh token, gravar no .env com permissão restrita — é automático.
-Sua senha é digitada no site do marketplace, nunca aqui.
+access/refresh token, guardar — é automático. Sua senha é digitada no site do
+marketplace, nunca aqui.
 
-Importante sobre o refresh token do ML: ele é de uso único. Este módulo grava
-o novo a cada renovação. Se você editar o .env na mão no meio de uma sessão
-ativa, corre o risco de sobrescrever o válido por um já gastado.
+Onde cada coisa fica: segredo (client secret, partner key, refresh token,
+secret do LWA, chave da API) vai para o cofre cifrado, core/cofre.py; o resto
+(IDs, URI de redirect, regras de negócio) continua no .env. Nenhum valor de
+segredo volta para a tela nem para o registro de eventos.
+
+Importante sobre o refresh token do ML: ele é de uso único. O conector grava
+o novo no cofre a cada renovação, e o do cofre vence o do .env.
 """
 import base64
 import hashlib
@@ -28,8 +32,8 @@ from urllib.parse import urlencode, urlparse, parse_qs
 
 import requests
 
-from config import BASE_DIR, DATA_DIR, config
-from core import seguranca
+from config import BASE_DIR, DATA_DIR, config, ler_arquivo_env
+from core import cofre, seguranca
 
 ARQ_ENV = DATA_DIR / ".env"
 
@@ -87,46 +91,84 @@ def extrair_code(texto: str) -> tuple[str, str]:
     return texto, ""
 
 
-def gravar_env(chaves: dict[str, str]) -> None:
+def gravar_env(chaves: dict[str, str]) -> dict:
     """
-    Atualiza o .env preservando comentários e ordem. Cria se não existir.
-    Permissão 600: o arquivo passa a conter segredo de verdade.
+    Guarda as configurações. Segredo vai para o cofre cifrado e nunca é
+    escrito no .env nem no ambiente do processo; o resto vai para o .env,
+    preservando comentários e ordem (cria o arquivo se não existir).
+
+    Uma linha antiga de segredo no .env não é apagada nem alterada: o valor do
+    cofre passa a valer, e o retorno diz quais linhas podem sair à mão.
+
+    Devolve só nomes, nunca valores: {"env", "cofre", "sobrepostos",
+    "em_texto_no_env"}.
     """
-    if not ARQ_ENV.exists():
-        modelo = BASE_DIR / ".env.example"
-        ARQ_ENV.write_text(modelo.read_text(encoding="utf-8") if modelo.exists() else "",
-                           encoding="utf-8")
+    segredos = {k: v for k, v in chaves.items() if k in cofre.SEGREDOS}
+    comuns = {k: v for k, v in chaves.items() if k not in cofre.SEGREDOS}
 
-    linhas = ARQ_ENV.read_text(encoding="utf-8").splitlines()
-    restantes = dict(chaves)
+    for chave, valor in segredos.items():
+        cofre.guardar_segredo(chave, valor)
 
-    for i, linha in enumerate(linhas):
-        m = re.match(r"^(\s*)([A-Z0-9_]+)\s*=", linha)
-        if m and m.group(2) in restantes:
-            chave = m.group(2)
-            linhas[i] = f"{chave}={restantes.pop(chave)}"
+    if comuns:
+        if not ARQ_ENV.exists():
+            modelo = BASE_DIR / ".env.example"
+            ARQ_ENV.write_text(modelo.read_text(encoding="utf-8") if modelo.exists() else "",
+                               encoding="utf-8")
 
-    for chave, valor in restantes.items():
-        linhas.append(f"{chave}={valor}")
+        linhas = ARQ_ENV.read_text(encoding="utf-8").splitlines()
+        restantes = dict(comuns)
 
-    ARQ_ENV.write_text("\n".join(linhas) + "\n", encoding="utf-8")
-    ARQ_ENV.chmod(0o600)
+        for i, linha in enumerate(linhas):
+            m = re.match(r"^(\s*)([A-Z0-9_]+)\s*=", linha)
+            if m and m.group(2) in restantes:
+                chave = m.group(2)
+                linhas[i] = f"{chave}={restantes.pop(chave)}"
 
-    # Reflete na sessão atual sem precisar reiniciar.
-    for chave, valor in chaves.items():
-        os.environ[chave] = valor
+        for chave, valor in restantes.items():
+            linhas.append(f"{chave}={valor}")
+
+        ARQ_ENV.write_text("\n".join(linhas) + "\n", encoding="utf-8")
+        ARQ_ENV.chmod(0o600)
+
+        # Reflete na sessão atual sem precisar reiniciar.
+        for chave, valor in comuns.items():
+            os.environ[chave] = valor
+
+    no_arquivo = ler_arquivo_env(ARQ_ENV) if segredos and ARQ_ENV.exists() else {}
+    return {
+        "env": sorted(comuns),
+        "cofre": sorted(segredos),
+        # Segredo fixo definido no ambiente do sistema vence o cofre.
+        "sobrepostos": sorted(k for k in segredos
+                              if k not in cofre.ROTATIVOS and cofre.definido_no_sistema(k)),
+        "em_texto_no_env": sorted(k for k in segredos if no_arquivo.get(k, "").strip()),
+    }
+
+
+def _valor(nome: str) -> str:
+    """Segredo pela regra do cofre; o resto, do ambiente."""
+    if nome in cofre.SEGREDOS:
+        return cofre.segredo(nome)
+    return os.getenv(nome, "")
 
 
 def status() -> dict:
-    """O que já está configurado e o que falta. Alimenta a tela."""
-    def preenchido(*nomes):
-        return all(os.getenv(n) for n in nomes)
+    """O que já está configurado e o que falta. Alimenta a tela. Só diz se
+    existe; nunca devolve o valor."""
+    erro_cofre = []
 
-    return {
+    def preenchido(*nomes):
+        try:
+            return all(_valor(n) for n in nomes)
+        except cofre.ErroCofre as e:
+            erro_cofre.append(str(e))
+            return False
+
+    estado = {
         "mercadolivre": {
             "nome": "Mercado Livre",
             "app_criado": preenchido("ML_CLIENT_ID", "ML_CLIENT_SECRET"),
-            "autorizado": bool(os.getenv("ML_REFRESH_TOKEN")),
+            "autorizado": preenchido("ML_REFRESH_TOKEN"),
             "portal": "https://developers.mercadolivre.com.br/devcenter",
             "redirect_uri": os.getenv("ML_REDIRECT_URI") or redirect_padrao(),
             "passos": [
@@ -145,7 +187,7 @@ def status() -> dict:
         "shopee": {
             "nome": "Shopee",
             "app_criado": preenchido("SHOPEE_PARTNER_ID", "SHOPEE_PARTNER_KEY"),
-            "autorizado": bool(os.getenv("SHOPEE_REFRESH_TOKEN")),
+            "autorizado": preenchido("SHOPEE_REFRESH_TOKEN"),
             "portal": "https://open.shopee.com",
             "passos": [
                 "Registre-se no Open Platform (comece pelo ambiente de teste)",
@@ -157,7 +199,7 @@ def status() -> dict:
         "amazon": {
             "nome": "Amazon",
             "app_criado": preenchido("AMZ_LWA_CLIENT_ID", "AMZ_LWA_CLIENT_SECRET"),
-            "autorizado": bool(os.getenv("AMZ_REFRESH_TOKEN")),
+            "autorizado": preenchido("AMZ_REFRESH_TOKEN"),
             "portal": "https://sellercentral.amazon.com.br",
             "passos": [
                 "Exige conta Professional Seller aprovada — pode levar dias",
@@ -168,8 +210,8 @@ def status() -> dict:
         },
         "claude": {
             "nome": "Redação das respostas",
-            "app_criado": bool(os.getenv("ANTHROPIC_API_KEY")),
-            "autorizado": bool(os.getenv("ANTHROPIC_API_KEY")),
+            "app_criado": preenchido("ANTHROPIC_API_KEY"),
+            "autorizado": preenchido("ANTHROPIC_API_KEY"),
             "portal": "https://console.anthropic.com",
             "passos": [
                 "Crie uma chave de API no console",
@@ -177,6 +219,11 @@ def status() -> dict:
             ],
         },
     }
+    if erro_cofre:
+        # Sem valor nenhum: a mensagem do cofre não traz segredo nem chave.
+        for dados in estado.values():
+            dados["aviso"] = " ".join(filter(None, [erro_cofre[0], dados.get("aviso")]))
+    return estado
 
 
 # --------------------------------------------------------- Mercado Livre
@@ -207,11 +254,14 @@ def ml_trocar_code(code_ou_url: str, sid: str | None, redirect_uri: str | None =
     # não criou, que venceu ou que já foi usado.
     verifier = seguranca.consumir_state_oauth(estado, "mercadolivre", sid)["verifier"]
     redirect_uri = redirect_uri or os.getenv("ML_REDIRECT_URI") or redirect_padrao()
+    # O código vale uma vez só: se o cofre não aceitaria o token, para aqui,
+    # antes de gastá-lo.
+    cofre.conferir()
 
     dados = {
         "grant_type": "authorization_code",
         "client_id": os.getenv("ML_CLIENT_ID"),
-        "client_secret": os.getenv("ML_CLIENT_SECRET"),
+        "client_secret": cofre.segredo("ML_CLIENT_SECRET"),
         "code": code,
         "redirect_uri": redirect_uri,
         "code_verifier": verifier,
@@ -235,12 +285,12 @@ def ml_trocar_code(code_ou_url: str, sid: str | None, redirect_uri: str | None =
         raise ValueError(f"O Mercado Livre recusou a troca ({r.status_code}, {codigo}).{dica}")
 
     d = r.json()
+    from conectores.mercadolivre import guardar_tokens
+    guardar_tokens(d)  # access e refresh token no cofre, nunca no .env
     gravar_env({
-        "ML_REFRESH_TOKEN": d["refresh_token"],
         "ML_SELLER_ID": str(d.get("user_id", "")),
         "ML_REDIRECT_URI": redirect_uri,
     })
-    config.ml.refresh_token = d["refresh_token"]
     config.ml.seller_id = str(d.get("user_id", ""))
     return {"seller_id": d.get("user_id"), "expira_em_seg": d.get("expires_in")}
 
@@ -261,19 +311,25 @@ def shopee_trocar_code(code: str, shop_id: str) -> dict:
     from conectores.shopee import Shopee
     if shop_id:
         os.environ["SHOPEE_SHOP_ID"] = str(shop_id)
+    cofre.conferir()  # antes de gastar o código de uso único
     s = Shopee()
-    d = s.trocar_code(code)
-    gravar_env({
-        "SHOPEE_REFRESH_TOKEN": d["refresh_token"],
-        "SHOPEE_SHOP_ID": str(shop_id or os.getenv("SHOPEE_SHOP_ID", "")),
-    })
+    d = s.trocar_code(code)  # access e refresh token vão para o cofre
+    gravar_env({"SHOPEE_SHOP_ID": str(shop_id or os.getenv("SHOPEE_SHOP_ID", ""))})
     return {"shop_id": shop_id, "expira_em_seg": d.get("expire_in")}
 
 
 # ------------------------------------------------------------------ Teste
 
 def testar(marketplace: str) -> dict:
-    """Chama a API de verdade e confirma que a credencial funciona."""
+    """Chama a API de verdade e confirma que a credencial funciona.
+
+    Erro dos conectores e do cofre chega à tela com a mensagem deles. Qualquer
+    outro chega só com o tipo: a mensagem de uma exceção inesperada pode
+    repetir um valor decifrado (ex.: o int() de uma validade adulterada)."""
+    from conectores.amazon import ErroAmazon
+    from conectores.mercadolivre import ErroMercadoLivre
+    from conectores.shopee import ErroShopee
+
     try:
         if marketplace == "mercadolivre":
             from conectores.mercadolivre import MercadoLivre
@@ -296,7 +352,7 @@ def testar(marketplace: str) -> dict:
             return {"ok": True, "detalhe": "Token LWA obtido com sucesso."}
 
         if marketplace == "claude":
-            chave = os.getenv("ANTHROPIC_API_KEY", "")
+            chave = cofre.segredo("ANTHROPIC_API_KEY")
             if not chave:
                 return {"ok": False, "detalhe": "Chave não preenchida."}
             r = requests.post(
@@ -311,5 +367,7 @@ def testar(marketplace: str) -> dict:
                                else f"Recusada ({r.status_code})."}
 
         return {"ok": False, "detalhe": "Marketplace desconhecido."}
-    except Exception as e:
+    except (ErroMercadoLivre, ErroShopee, ErroAmazon, cofre.ErroCofre) as e:
         return {"ok": False, "detalhe": str(e)[:300]}
+    except Exception as e:
+        return {"ok": False, "detalhe": f"Não foi possível testar a conexão ({type(e).__name__})."}

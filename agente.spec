@@ -1,7 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 # Gera o binário: pyinstaller agente.spec
 # O painel.html vai embutido; o .env fica FORA, lido da pasta do executável
-# (config.DATA_DIR), onde também ficam o banco, a chave e os tokens.
+# (config.DATA_DIR), onde também ficam o banco (com o cofre de credenciais) e
+# as chaves .chave_lgpd e .chave_cofre.
 
 a = Analysis(
     ['executar.py'],
@@ -13,6 +14,7 @@ a = Analysis(
         'uvicorn.protocols.websockets.auto', 'uvicorn.lifespan.on',
         'conectores.mercadolivre', 'conectores.amazon', 'conectores.shopee',
         'core.estados', 'core.aprovacao', 'core.conformidade', 'core.privacidade',
+        'core.cofre',
         'inteligencia.precificacao', 'inteligencia.tendencias',
         'atendimento.persona', 'atendimento.bot', 'worker',
     ],

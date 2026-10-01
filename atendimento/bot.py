@@ -9,12 +9,10 @@ auto-publicação só pras perguntas de baixo risco (as que casam com FAQ
 fixo). Comece com tudo na fila. Bot solto em anúncio novo é a forma mais
 rápida de perder reputação antes de ter feito a primeira venda.
 """
-import os
-
 import requests
 
 from atendimento.persona import persona_padrao, precisa_escalar
-from core import aprovacao
+from core import aprovacao, cofre
 from db import registrar_evento
 
 # Respostas fixas para as perguntas mais comuns. Resolvem a maior parte do
@@ -41,7 +39,10 @@ def redigir(pergunta: str, contexto_produto: dict, persona=None) -> str:
     'ESCALAR:' quando falta informação.
     """
     persona = persona or persona_padrao
-    chave = os.getenv("ANTHROPIC_API_KEY", "")
+    try:
+        chave = cofre.segredo("ANTHROPIC_API_KEY")  # ambiente do sistema, depois o cofre
+    except cofre.ErroCofre:
+        return "ESCALAR: cofre de credenciais indisponível (confira a chave do cofre)"
     if not chave:
         return "ESCALAR: ANTHROPIC_API_KEY não configurada"
 

@@ -7,9 +7,13 @@ módulo do projeto ser importado:
 
   - AGENTE_DADOS aponta para uma pasta temporária nova: o .env, o banco, a
     chave e os tokens da pasta do projeto não são lidos nem escritos;
-  - CHAVE_LGPD recebe uma chave Fernet gerada agora;
+  - CHAVE_LGPD e CHAVE_COFRE recebem chaves Fernet geradas agora, diferentes;
   - as credenciais de marketplace são falsas e o worker fica desligado;
   - proxy desligado (NO_PROXY=*), para a trava de rede valer.
+
+Se mesmo assim a pasta de dados for a do repositório (ou estiver dentro dela,
+ou o banco estiver lá), tudo aborta já na importação deste arquivo, antes da
+coleta: a pasta do repositório pode guardar os arquivos reais do dono.
 
 Cada teste ainda ganha a própria pasta (tmp_path), com banco novo, e qualquer
 conexão de rede fora do loopback reprova o teste.
@@ -25,8 +29,9 @@ from pathlib import Path
 import pytest
 from cryptography.fernet import Fernet
 
-from apoio import COMPRADOR, SENHA, USUARIO, MercadoLivreFalso
+from apoio import COMPRADOR, SENHA, USUARIO, MercadoLivreFalso, pasta_de_teste_recusada
 
+RAIZ = Path(__file__).resolve().parent.parent
 PASTA_DADOS = Path(tempfile.mkdtemp(prefix="agente-testes-")).resolve()
 
 # Variáveis do projeto que o ambiente de quem roda os testes poderia trazer.
@@ -52,6 +57,7 @@ os.environ["NO_PROXY"] = os.environ["no_proxy"] = "*"
 os.environ.update({
     "AGENTE_DADOS": str(PASTA_DADOS),
     "CHAVE_LGPD": Fernet.generate_key().decode(),
+    "CHAVE_COFRE": Fernet.generate_key().decode(),
     "WORKER_ATIVO": "false",
     "ABRIR_NAVEGADOR": "false",
     "ML_CLIENT_ID": "ml-id-falso",
@@ -66,15 +72,27 @@ os.environ.update({
 
 # ------------------------------------------------------------ trava da sessão
 
-@pytest.fixture(scope="session", autouse=True)
-def pasta_de_dados_temporaria():
-    """Aborta tudo se o projeto não estiver usando a pasta temporária."""
+def _abortar_se_a_pasta_nao_for_a_de_teste():
+    """A pasta do repositório pode guardar os arquivos reais do dono. Se o
+    projeto não estiver na pasta temporária, nada roda."""
     import config
 
-    if config.DATA_DIR != PASTA_DADOS or Path(config.config.db_path).parent != PASTA_DADOS:
+    motivo = pasta_de_teste_recusada(config.DATA_DIR, config.config.db_path, PASTA_DADOS, RAIZ)
+    if motivo:
         shutil.rmtree(PASTA_DADOS, ignore_errors=True)
-        pytest.exit(f"ABORTADO: o projeto não está usando a pasta de teste ({config.DATA_DIR}).",
-                    returncode=3)
+        pytest.exit(f"ABORTADO antes de qualquer teste: {motivo}.", returncode=3)
+
+
+# Já aqui, na importação do conftest, antes da coleta: os arquivos de teste
+# importam o projeto no topo.
+_abortar_se_a_pasta_nao_for_a_de_teste()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def pasta_de_dados_temporaria():
+    """Confere de novo antes do primeiro teste: algum import da coleta pode
+    ter mexido na configuração."""
+    _abortar_se_a_pasta_nao_for_a_de_teste()
     yield PASTA_DADOS
     shutil.rmtree(PASTA_DADOS, ignore_errors=True)
 
@@ -139,7 +157,7 @@ def isolamento(tmp_path, monkeypatch):
     import config
     import worker
     from conectores import mercadolivre, shopee
-    from core import privacidade, seguranca
+    from core import cofre, privacidade, seguranca
     from painel import configurar
     from painel.app import preparar
 
@@ -150,6 +168,12 @@ def isolamento(tmp_path, monkeypatch):
         monkeypatch.setattr(cfg, nome, dataclasses.replace(getattr(cfg, nome)))
     monkeypatch.setattr(configurar, "ARQ_ENV", tmp_path / ".env")
     monkeypatch.setattr(privacidade, "ARQ_CHAVE", tmp_path / ".chave_lgpd")
+    monkeypatch.setattr(cofre, "ARQ_CHAVE", tmp_path / ".chave_cofre")
+    monkeypatch.setattr(cofre, "ARQ_TRAVA", tmp_path / ".trava_tokens")
+    # Tokens que ficaram só na memória não passam de um teste para o outro.
+    monkeypatch.setattr(cofre, "_pendentes", {})
+    monkeypatch.setattr(cofre, "_proxima_tentativa", {})
+    monkeypatch.setattr(config, "DO_ARQUIVO_ENV", set())
     monkeypatch.setattr(mercadolivre, "ARQ_TOKEN", tmp_path / ".token_ml.json")
     monkeypatch.setattr(shopee, "ARQ_TOKEN", tmp_path / ".token_shopee.json")
     monkeypatch.setattr(worker, "PASTA_ORDENS", tmp_path / "ordens_de_compra")
@@ -159,7 +183,8 @@ def isolamento(tmp_path, monkeypatch):
     preparar()
     yield tmp_path
 
-    # gravar_env escreve direto em os.environ; nada disso passa para o próximo teste.
+    # gravar_env escreve direto em os.environ (o que não é segredo); nada disso
+    # passa para o próximo teste.
     for chave in set(os.environ) - set(ambiente):
         del os.environ[chave]
     for chave, valor in ambiente.items():
