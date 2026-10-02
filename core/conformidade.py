@@ -2,15 +2,24 @@
 Motor de conformidade.
 
 A questão da Amazon não se resolve com um aviso no README — resolve-se com
-código que impede a ação. Este módulo é consultado ANTES de qualquer compra,
-publicação ou envio. Se a regra barra, a ação não entra na fila; vira
-pendência marcada como bloqueada, com o motivo e a saída possível.
+código que impede a ação. Este módulo é consultado pelo worker antes de pôr
+uma compra na fila e de novo na aprovação, pelo painel e pelo cli.py, com a
+mesma função (verificar_pendencia). Violação dura manda o pedido para
+PROBLEMA; falta de confirmação deixa o item na fila, bloqueado, com o motivo
+e a saída, até alguém preencher o dado.
+
+Falha fechada: a regra que se aplica ao item e não tem o dado de que precisa
+não passa em branco. Ela devolve um bloqueio "falta confirmar", que diz qual
+dado falta e onde preencher. Nenhum contexto presume o valor que libera.
 
 Cada regra tem fonte declarada. Quando a plataforma mudar a política, você
 sabe qual regra revisar e onde conferir.
 """
 from dataclasses import dataclass, field
 from enum import Enum
+
+from config import _DESLIGADO, _LIGADO, config
+from db import conectar
 
 
 class Severidade(str, Enum):
@@ -25,6 +34,9 @@ class Violacao:
     mensagem: str
     saida: str
     fonte: str
+    # True: bloqueia porque falta um dado, não porque o dado reprova. Some
+    # sozinho quando alguém preenche a confirmação.
+    confirmacao: bool = False
 
 
 @dataclass
@@ -32,8 +44,17 @@ class Resultado:
     violacoes: list[Violacao] = field(default_factory=list)
 
     @property
+    def bloqueios(self) -> list[Violacao]:
+        return [v for v in self.violacoes if v.severidade == Severidade.BLOQUEIO]
+
+    @property
     def bloqueado(self) -> bool:
-        return any(v.severidade == Severidade.BLOQUEIO for v in self.violacoes)
+        return bool(self.bloqueios)
+
+    @property
+    def so_falta_confirmar(self) -> bool:
+        """Bloqueado só por dado que falta: nenhuma regra reprovou um dado."""
+        return self.bloqueado and all(v.confirmacao for v in self.bloqueios)
 
     @property
     def resumo(self) -> str:
@@ -42,8 +63,63 @@ class Resultado:
         return " | ".join(f"{v.regra}: {v.mensagem}" for v in self.violacoes)
 
 
-# ---------------------------------------------------------------- Regras
+def motivo_do_bloqueio(resultado: Resultado) -> str:
+    """O texto único da recusa: a API do painel (HTTP 409) e o cli.py aprovar
+    mostram exatamente esta frase."""
+    return "Bloqueado pela conformidade: " + "; ".join(v.mensagem for v in resultado.bloqueios)
 
+
+# Tipos de ação da fila (core/aprovacao.py) que têm regras definidas aqui.
+# Tipo fora desta lista é bloqueado: sem regra, não há como dizer que passa.
+TIPOS = ("compra_fornecedor", "resposta_cliente", "ajuste_preco", "publicar_anuncio")
+
+# Sem o prazo prometido no anúncio, o prazo do fornecedor não pode passar
+# disto. É o mesmo limite que o worker aplica antes de montar a compra.
+PRAZO_MAXIMO_SEM_ANUNCIO = 7
+
+CATEGORIAS_RESTRITAS = {
+    "suplemento": "Registro/notificação na Anvisa e rotulagem conforme RDC.",
+    "cosmetico": "Registro ou notificação Anvisa.",
+    "medicamento": "Venda restrita a farmácia licenciada.",
+    "alimento": "Registro sanitário e rastreabilidade de lote.",
+    "brinquedo": "Certificação compulsória Inmetro.",
+    "eletrico": "Certificação Inmetro para produtos energizados.",
+    "eletronico_radio": "Homologação Anatel para qualquer produto com rádio (Wi-Fi, Bluetooth).",
+    "puericultura": "Certificação Inmetro compulsória.",
+    "airsoft": "Registro no Exército.",
+    "agrotoxico": "Registro Mapa/Ibama.",
+}
+SEM_CATEGORIA_REGULADA = "nenhuma"
+
+
+def _falta(regra: str, mensagem: str, saida: str, fonte: str) -> Violacao:
+    return Violacao(regra=regra, severidade=Severidade.BLOQUEIO, mensagem=mensagem,
+                    saida=saida, fonte=fonte, confirmacao=True)
+
+
+def _no_produto(ctx: dict, coluna: str, valor: str) -> str:
+    """Comando de exemplo para preencher a confirmação no cadastro do produto
+    (o cadastro ainda é SQL à mão)."""
+    sku = str(ctx.get("sku") or "SKU").replace("'", "''")
+    return f"UPDATE produtos SET {coluna} = {valor} WHERE sku = '{sku}';"
+
+
+# ---------------------------------------------------------------- Regras
+#
+# Cada regra declara a que tipos de ação se aplica. Dentro do tipo, dado que
+# falta vira bloqueio "falta confirmar" (_falta), nunca um "passa".
+
+REGRAS: list[tuple] = []
+
+
+def _regra(*tipos: str):
+    def registrar(funcao):
+        REGRAS.append((funcao, frozenset(tipos)))
+        return funcao
+    return registrar
+
+
+@_regra("compra_fornecedor")
 def _amazon_remetente_terceiro(ctx: dict) -> Violacao | None:
     """
     A Amazon exige que o vendedor registrado seja o único identificado em nota,
@@ -52,91 +128,164 @@ def _amazon_remetente_terceiro(ctx: dict) -> Violacao | None:
     """
     if ctx.get("marketplace") != "amazon":
         return None
-    if ctx.get("envio_direto_fornecedor"):
+    fonte = "Amazon Seller Central — Política de Dropshipping"
+    envio_direto = ctx.get("envio_direto_fornecedor")
+    if envio_direto is None:
+        return _falta(
+            "AMZ-DROPSHIP",
+            "Falta saber se o fornecedor despacha direto ao comprador (pedido Amazon).",
+            "Vincule o produto a um fornecedor com canal cadastrado (email, whatsapp, "
+            "api ou portal) na tabela fornecedores.",
+            fonte,
+        )
+    if envio_direto:
         return Violacao(
             regra="AMZ-DROPSHIP",
             severidade=Severidade.BLOQUEIO,
             mensagem="Envio direto do fornecedor ao comprador é proibido na Amazon.",
             saida="Receba a mercadoria, reembale sem identificação do fornecedor "
                   "e despache com seus dados. Ou use FBA.",
-            fonte="Amazon Seller Central — Política de Dropshipping",
+            fonte=fonte,
         )
     return None
 
 
+@_regra("compra_fornecedor")
 def _amazon_identificacao_fornecedor(ctx: dict) -> Violacao | None:
     if ctx.get("marketplace") != "amazon":
         return None
-    if not ctx.get("reembalagem_confirmada", False):
+    fonte = "Amazon Seller Central — Política de Dropshipping"
+    confirmada = ctx.get("reembalagem_confirmada")
+    if confirmada is None:
+        return _falta(
+            "AMZ-REEMBALAGEM",
+            "Falta confirmar a reembalagem deste produto para pedido Amazon.",
+            "Depois de garantir que nota, caixa e romaneio saem sem o nome do "
+            "fornecedor, marque no produto: " + _no_produto(ctx, "reembalagem_confirmada", "1"),
+            fonte,
+        )
+    if not confirmada:
         return Violacao(
             regra="AMZ-REEMBALAGEM",
             severidade=Severidade.BLOQUEIO,
-            mensagem="Reembalagem não confirmada para pedido Amazon.",
-            saida="Marque `reembalagem_confirmada` no produto só depois de "
-                  "garantir que nota, caixa e romaneio saem sem o nome do fornecedor.",
-            fonte="Amazon Seller Central — Política de Dropshipping",
+            mensagem="Produto marcado como sem reembalagem (reembalagem_confirmada = 0 "
+                     "ou 'não') em pedido Amazon.",
+            saida="Só marque 1 depois de garantir que nota, caixa e romaneio saem "
+                  "sem o nome do fornecedor. Ou use FBA.",
+            fonte=fonte,
         )
     return None
 
 
+@_regra("compra_fornecedor")
 def _prazo_incompativel(ctx: dict) -> Violacao | None:
     """Prazo de fábrica maior que a promessa do anúncio gera atraso sistêmico."""
-    prazo_forn = ctx.get("prazo_fornecedor_dias", 0)
-    prazo_anuncio = ctx.get("prazo_anuncio_dias", 0)
-    if prazo_forn and prazo_anuncio and prazo_forn >= prazo_anuncio:
+    fonte = "Regra operacional própria"
+    prazo_forn = ctx.get("prazo_fornecedor_dias")
+    if prazo_forn is None:
+        return _falta(
+            "PRAZO",
+            "Falta o prazo do fornecedor (ou o prazo_dias gravado não é um número de dias).",
+            "Preencha prazo_dias do fornecedor (tabela fornecedores) com um número de "
+            "dias, ou PRAZO_FORNECEDOR_DIAS no .env.",
+            fonte,
+        )
+    prazo_anuncio = ctx.get("prazo_anuncio_dias")
+    if prazo_anuncio:
+        if prazo_forn >= prazo_anuncio:
+            return Violacao(
+                regra="PRAZO",
+                severidade=Severidade.BLOQUEIO,
+                mensagem=f"Fornecedor leva {prazo_forn}d; anúncio promete {prazo_anuncio}d.",
+                saida="Mantenha estoque mínimo deste SKU ou aumente o prazo do anúncio.",
+                fonte=fonte,
+            )
+        return None
+    # Prazo do anúncio desconhecido: vale o limite fixo, não um "passa".
+    if prazo_forn > PRAZO_MAXIMO_SEM_ANUNCIO:
         return Violacao(
             regra="PRAZO",
             severidade=Severidade.BLOQUEIO,
-            mensagem=f"Fornecedor leva {prazo_forn}d; anúncio promete {prazo_anuncio}d.",
-            saida="Mantenha estoque mínimo deste SKU ou aumente o prazo do anúncio.",
-            fonte="Regra operacional própria",
+            mensagem=f"Fornecedor leva {prazo_forn}d; sem o prazo do anúncio, o limite "
+                     f"é {PRAZO_MAXIMO_SEM_ANUNCIO}d.",
+            saida="Mantenha estoque mínimo deste SKU ou troque de fornecedor.",
+            fonte=fonte,
         )
     return None
 
 
+@_regra("compra_fornecedor", "publicar_anuncio")
 def _categoria_restrita(ctx: dict) -> Violacao | None:
     """
     Categorias que exigem registro, licença ou laudo. Vender sem habilitação
     gera remoção do anúncio e, dependendo do item, responsabilidade sanitária.
     """
-    restritas = {
-        "suplemento": "Registro/notificação na Anvisa e rotulagem conforme RDC.",
-        "cosmetico": "Registro ou notificação Anvisa.",
-        "medicamento": "Venda restrita a farmácia licenciada.",
-        "alimento": "Registro sanitário e rastreabilidade de lote.",
-        "brinquedo": "Certificação compulsória Inmetro.",
-        "eletrico": "Certificação Inmetro para produtos energizados.",
-        "eletronico_radio": "Homologação Anatel para qualquer produto com rádio (Wi-Fi, Bluetooth).",
-        "puericultura": "Certificação Inmetro compulsória.",
-        "airsoft": "Registro no Exército.",
-        "agrotoxico": "Registro Mapa/Ibama.",
-    }
-    cat = (ctx.get("categoria_regulada") or "").lower()
-    if cat in restritas:
-        if not ctx.get("habilitacao_confirmada", False):
-            return Violacao(
-                regra="CATEGORIA-RESTRITA",
-                severidade=Severidade.BLOQUEIO,
-                mensagem=f"Categoria '{cat}' exige habilitação não confirmada.",
-                saida=restritas[cat],
-                fonte="Legislação setorial brasileira (Anvisa / Inmetro / Anatel)",
-            )
+    fonte = "Legislação setorial brasileira (Anvisa / Inmetro / Anatel)"
+    lista = ", ".join(CATEGORIAS_RESTRITAS)
+    bruta = ctx.get("categoria_regulada")
+    if bruta is None or not str(bruta).strip():
+        return _falta(
+            "CATEGORIA-RESTRITA",
+            "Falta dizer se o produto é de categoria regulada.",
+            f"No cadastro do produto, preencha categoria_regulada com "
+            f"'{SEM_CATEGORIA_REGULADA}' ou com uma destas: {lista}. Exemplo: "
+            + _no_produto(ctx, "categoria_regulada", f"'{SEM_CATEGORIA_REGULADA}'"),
+            fonte,
+        )
+    cat = str(bruta).strip().lower()
+    if cat == SEM_CATEGORIA_REGULADA:
+        return None
+    if cat not in CATEGORIAS_RESTRITAS:
+        return _falta(
+            "CATEGORIA-RESTRITA",
+            f"Categoria regulada '{cat}' desconhecida.",
+            f"Use '{SEM_CATEGORIA_REGULADA}' ou uma destas: {lista}.",
+            fonte,
+        )
+    habilitacao = ctx.get("habilitacao_confirmada")
+    if habilitacao is None:
+        return _falta(
+            "CATEGORIA-RESTRITA",
+            f"Categoria '{cat}' exige habilitação; falta confirmar.",
+            f"{CATEGORIAS_RESTRITAS[cat]} Com ela em dia: "
+            + _no_produto(ctx, "habilitacao_confirmada", "1"),
+            fonte,
+        )
+    if not habilitacao:
+        return Violacao(
+            regra="CATEGORIA-RESTRITA",
+            severidade=Severidade.BLOQUEIO,
+            mensagem=f"Categoria '{cat}' exige habilitação não confirmada.",
+            saida=CATEGORIAS_RESTRITAS[cat],
+            fonte=fonte,
+        )
     return None
 
 
+@_regra("compra_fornecedor", "ajuste_preco")
 def _margem_negativa(ctx: dict) -> Violacao | None:
+    fonte = "Regra operacional própria"
     m = ctx.get("margem_pct")
-    if m is not None and m < 0:
+    if m is None:
+        return _falta(
+            "MARGEM-NEGATIVA",
+            "Margem prevista não calculada.",
+            "Cadastre o custo do produto (produtos.custo_fornecedor) para o worker "
+            "calcular a margem, ou informe a margem do novo preço.",
+            fonte,
+        )
+    if m < 0:
         return Violacao(
             regra="MARGEM-NEGATIVA",
             severidade=Severidade.BLOQUEIO,
             mensagem=f"Margem prevista de {m}%. A venda dá prejuízo.",
             saida="Reprecifique o anúncio ou renegocie o custo antes de comprar.",
-            fonte="Regra operacional própria",
+            fonte=fonte,
         )
     return None
 
 
+@_regra("publicar_anuncio")
 def _garantia_legal(ctx: dict) -> Violacao | None:
     """
     CDC art. 26: 30 dias (não durável) / 90 dias (durável) de garantia legal,
@@ -144,9 +293,16 @@ def _garantia_legal(ctx: dict) -> Violacao | None:
     solidariamente. Prometer menos que isso é cláusula abusiva.
     """
     prometido = ctx.get("garantia_prometida_dias")
-    durabilidade = ctx.get("durabilidade", "duravel")
+    durabilidade = ctx.get("durabilidade") or "duravel"
     minimo = 90 if durabilidade == "duravel" else 30
-    if prometido is not None and prometido < minimo:
+    if prometido is None:
+        return _falta(
+            "CDC-GARANTIA",
+            "Falta a garantia prometida no anúncio.",
+            f"Informe a garantia do anúncio: no mínimo {minimo} dias.",
+            "CDC art. 26",
+        )
+    if prometido < minimo:
         return Violacao(
             regra="CDC-GARANTIA",
             severidade=Severidade.BLOQUEIO,
@@ -157,8 +313,13 @@ def _garantia_legal(ctx: dict) -> Violacao | None:
     return None
 
 
+@_regra("publicar_anuncio", "resposta_cliente")
 def _direito_arrependimento(ctx: dict) -> Violacao | None:
-    """CDC art. 49: 7 dias de arrependimento em compra fora do estabelecimento."""
+    """CDC art. 49: 7 dias de arrependimento em compra fora do estabelecimento.
+
+    Regra de detecção: bloqueia quando alguém marcou que o texto nega o
+    direito. Hoje nada marca isso sozinho; o bot de atendimento escala para
+    você toda pergunta sobre devolução, troca ou garantia antes de redigir."""
     if ctx.get("recusa_arrependimento"):
         return Violacao(
             regra="CDC-ARREPENDIMENTO",
@@ -171,21 +332,34 @@ def _direito_arrependimento(ctx: dict) -> Violacao | None:
     return None
 
 
+@_regra("compra_fornecedor", "publicar_anuncio")
 def _nota_fiscal(ctx: dict) -> Violacao | None:
-    if ctx.get("emite_nota") is False:
+    fonte = "Convênio ICMS / obrigação acessória do marketplace"
+    emite = ctx.get("emite_nota")
+    if emite is None:
+        return _falta(
+            "FISCAL-NF",
+            "Falta confirmar a emissão de nota fiscal nas vendas.",
+            "Se você emite nota fiscal em toda venda, defina EMITE_NOTA_FISCAL=true "
+            "no .env e reinicie o programa.",
+            fonte,
+        )
+    if emite is False:
         return Violacao(
             regra="FISCAL-NF",
             severidade=Severidade.BLOQUEIO,
             mensagem="Venda sem emissão de nota fiscal.",
             saida="Marketplaces retêm e declaram o repasse. Venda sem NF gera "
                   "divergência automática na Receita.",
-            fonte="Convênio ICMS / obrigação acessória do marketplace",
+            fonte=fonte,
         )
     return None
 
 
+@_regra("ajuste_preco", "publicar_anuncio")
 def _preco_fora_da_curva(ctx: dict) -> Violacao | None:
-    """Preço muito abaixo da mediana costuma indicar erro de cadastro."""
+    """Preço muito abaixo da mediana costuma indicar erro de cadastro. É só
+    alerta: sem mediana, não há o que comparar."""
     preco = ctx.get("preco")
     mediana = ctx.get("preco_mediano_mercado")
     if preco and mediana and mediana > 0 and preco < mediana * 0.4:
@@ -199,29 +373,136 @@ def _preco_fora_da_curva(ctx: dict) -> Violacao | None:
     return None
 
 
-REGRAS = [
-    _amazon_remetente_terceiro,
-    _amazon_identificacao_fornecedor,
-    _prazo_incompativel,
-    _categoria_restrita,
-    _margem_negativa,
-    _garantia_legal,
-    _direito_arrependimento,
-    _nota_fiscal,
-    _preco_fora_da_curva,
-]
-
-
 def verificar(contexto: dict) -> Resultado:
     """
-    Roda todas as regras contra o contexto da ação.
-
-    Chame antes de enfileirar compra, antes de publicar anúncio e antes de
-    responder cliente. O custo é desprezível e evita o erro caro.
+    Roda, contra o contexto, as regras do tipo da ação (contexto["tipo"]; sem
+    tipo, vale compra_fornecedor). Tipo sem regras é bloqueado.
     """
+    tipo = contexto.get("tipo") or "compra_fornecedor"
     r = Resultado()
-    for regra in REGRAS:
-        v = regra(contexto)
-        if v:
-            r.violacoes.append(v)
+    if tipo not in TIPOS:
+        r.violacoes.append(Violacao(
+            regra="TIPO-SEM-REGRAS",
+            severidade=Severidade.BLOQUEIO,
+            mensagem=f"Não há regras de conformidade para '{tipo}'.",
+            saida="Defina as regras deste tipo em core/conformidade.py antes de aprovar.",
+            fonte="Regra operacional própria",
+        ))
+        return r
+    for regra, tipos in REGRAS:
+        if tipo in tipos:
+            v = regra(contexto)
+            if v:
+                r.violacoes.append(v)
     return r
+
+
+# ------------------------------------------------- Contexto de uma pendência
+
+def _sim_nao(valor) -> bool | None:
+    """Confirmação gravada à mão no cadastro (SQL). Leitura estrita, sem
+    bool() no valor cru: numa coluna INTEGER do SQLite, 'nao' fica TEXT e
+    bool('nao') daria True.
+
+      - 1, ou true/sim/yes/on: True;
+      - 0, ou false/nao/não/no/off: False (as mesmas palavras do .env);
+      - qualquer outra coisa, inclusive NULL e '': None, "falta confirmar".
+    """
+    if isinstance(valor, bool):
+        return valor
+    if isinstance(valor, (int, float)):
+        return {1: True, 0: False}.get(valor)
+    if isinstance(valor, str):
+        texto = valor.strip().lower()
+        if texto in _LIGADO:
+            return True
+        if texto in _DESLIGADO:
+            return False
+    return None
+
+
+def prazo_do_fornecedor(valor) -> int | float | None:
+    """prazo_dias do fornecedor, gravado à mão no cadastro (SQL). Vazio ou 0
+    vale PRAZO_FORNECEDOR_DIAS, como sempre valeu; um número vale ele mesmo.
+    Texto que não é número ('6 dias' fica TEXT numa coluna INTEGER do SQLite)
+    é None, "falta o prazo", em vez de quebrar a comparação com TypeError."""
+    if not valor:
+        return config.negocio.prazo_fornecedor_dias
+    if isinstance(valor, (int, float)) and not isinstance(valor, bool):
+        return valor
+    if isinstance(valor, str) and valor.strip().isascii() and valor.strip().isdigit():
+        return int(valor.strip())
+    return None
+
+
+def _envio_direto(canal: str | None) -> bool | None:
+    """Fornecedor pedido por API ou portal despacha direto ao comprador; por
+    e-mail ou WhatsApp, a mercadoria passa por você. Canal desconhecido:
+    ninguém sabe."""
+    if canal in ("api", "portal"):
+        return True
+    if canal in ("email", "whatsapp"):
+        return False
+    return None
+
+
+def _fatos_da_compra(payload: dict) -> dict:
+    """Fatos de produto e fornecedor lidos do banco na hora da checagem, e não
+    copiados para a fila: a confirmação preenchida depois libera o item que
+    já está esperando, e a retirada volta a bloquear."""
+    sku = payload.get("sku")
+    linha = None
+    if sku:
+        with conectar() as conn:
+            linha = conn.execute(
+                "SELECT pr.categoria_regulada, pr.habilitacao_confirmada,"
+                " pr.reembalagem_confirmada, f.id AS fornecedor_id, f.canal, f.prazo_dias"
+                " FROM produtos pr LEFT JOIN fornecedores f ON f.id = pr.fornecedor_id"
+                " WHERE pr.sku = ?", (sku,),
+            ).fetchone()
+    if linha is None:
+        return {"categoria_regulada": None, "habilitacao_confirmada": None,
+                "reembalagem_confirmada": None, "envio_direto_fornecedor": None,
+                "prazo_fornecedor_dias": None}
+    prazo = None
+    if linha["fornecedor_id"] is not None:
+        prazo = prazo_do_fornecedor(linha["prazo_dias"])
+    return {
+        "categoria_regulada": linha["categoria_regulada"],
+        "habilitacao_confirmada": _sim_nao(linha["habilitacao_confirmada"]),
+        "reembalagem_confirmada": _sim_nao(linha["reembalagem_confirmada"]),
+        "envio_direto_fornecedor": _envio_direto(linha["canal"]),
+        "prazo_fornecedor_dias": prazo,
+    }
+
+
+def contexto_da_pendencia(tipo: str, payload: dict) -> dict:
+    """O contexto que as regras recebem para uma ação da fila. Nada aqui tem
+    valor padrão que libera: o que não se sabe vai como None."""
+    contexto = {
+        "tipo": tipo,
+        "sku": payload.get("sku"),
+        "marketplace": payload.get("marketplace"),
+        "margem_pct": payload.get("margem_prevista"),
+        "preco": payload.get("preco"),
+        "preco_mediano_mercado": payload.get("preco_mediano_mercado"),
+        "prazo_anuncio_dias": payload.get("prazo_anuncio_dias"),
+        "categoria_regulada": payload.get("categoria_regulada"),
+        "habilitacao_confirmada": payload.get("habilitacao_confirmada"),
+        "garantia_prometida_dias": payload.get("garantia_prometida_dias"),
+        "durabilidade": payload.get("durabilidade"),
+        "recusa_arrependimento": payload.get("recusa_arrependimento"),
+        # Confirmação do vendedor, vale para todas as vendas.
+        "emite_nota": config.negocio.emite_nota,
+    }
+    if tipo == "compra_fornecedor":
+        # Produto e fornecedor: o banco é a fonte, não o que veio na fila.
+        contexto.update(_fatos_da_compra(payload))
+    return contexto
+
+
+def verificar_pendencia(tipo: str, payload: dict) -> Resultado:
+    """A checagem única de uma ação da fila. O worker chama antes de
+    enfileirar; core/aprovacao.aprovar chama antes de executar (painel e
+    cli.py passam por lá); o painel chama para mostrar a fila."""
+    return verificar(contexto_da_pendencia(tipo, payload))

@@ -556,20 +556,17 @@ def test_amazon_le_pelo_cofre_e_falha_como_erro_do_conector(monkeypatch):
 
 
 def test_bot_le_a_chave_da_api_pelo_cofre(monkeypatch):
-    from atendimento import bot
+    from apoio import AnthropicFalso, resposta_claude
+    from atendimento import bot, claude_api
 
-    enviados = []
-
-    def post(url, headers=None, json=None, timeout=None):
-        enviados.append(headers)
-        return Resposta(200, {"content": [{"type": "text", "text": "Resposta pronta."}]})
-
-    monkeypatch.setattr(bot, "requests", types.SimpleNamespace(post=post, RequestException=OSError))
+    falso = AnthropicFalso(resposta_claude("Resposta pronta."))
+    monkeypatch.setattr(claude_api.anthropic, "Anthropic", falso)
 
     assert bot.redigir("tem garantia?", {}).startswith("ESCALAR: ANTHROPIC_API_KEY")
+    assert falso.criados == []  # sem chave, nem cliente é criado
     cofre.guardar_segredo("ANTHROPIC_API_KEY", "sk-do-cofre")
     assert bot.redigir("tem garantia?", {}) == "Resposta pronta."
-    assert enviados[0]["x-api-key"] == "sk-do-cofre"
+    assert falso.criados[0]["api_key"] == "sk-do-cofre"  # passada explícita ao SDK
 
 
 # ----------------------------------------------------------- ordem de leitura
@@ -1506,3 +1503,5 @@ def test_gitignore_cobre_a_chave_do_cofre():
     linhas = (RAIZ / ".gitignore").read_text(encoding="utf-8").splitlines()
     assert ".chave_cofre" in linhas
     assert ".trava_tokens.*" in linhas
+    # Qualquer chave, token antigo ou trava com o mesmo prefixo (.trava_ciclo...).
+    assert {".chave_*", ".token_*", ".trava_*"} <= set(linhas)

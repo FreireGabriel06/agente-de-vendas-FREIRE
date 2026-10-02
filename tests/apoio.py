@@ -3,6 +3,7 @@
 Não importa nada do projeto no topo: o conftest.py precisa preparar o
 ambiente antes disso.
 """
+import types
 from pathlib import Path
 
 USUARIO = "operador.teste"
@@ -28,6 +29,49 @@ def pasta_de_teste_recusada(pasta_dados, banco, pasta_teste, raiz) -> str | None
 
 def cabecalho(csrf: str) -> dict:
     return {"X-CSRF-Token": csrf}
+
+
+class AnthropicFalso:
+    """Faz as vezes da classe anthropic.Anthropic, sem rede. Guarda os
+    argumentos de cada cliente criado, de cada beta.messages.create e de cada
+    models.retrieve, e devolve a resposta (ou levanta o erro) que o teste
+    escolheu."""
+
+    def __init__(self, resposta=None, erro=None):
+        self.resposta = resposta
+        self.erro = erro
+        self.criados = []     # kwargs de anthropic.Anthropic(...)
+        self.mensagens = []   # kwargs de client.beta.messages.create(...)
+        self.consultas = []   # model_id de client.models.retrieve(...)
+
+    def __call__(self, **kwargs):
+        self.criados.append(kwargs)
+        return types.SimpleNamespace(
+            # Só o caminho beta: é ele que aceita betas=[...] e fallbacks.
+            beta=types.SimpleNamespace(messages=types.SimpleNamespace(create=self._criar)),
+            models=types.SimpleNamespace(retrieve=self._consultar),
+        )
+
+    def _criar(self, **kwargs):
+        self.mensagens.append(kwargs)
+        if self.erro is not None:
+            raise self.erro
+        return self.resposta
+
+    def _consultar(self, model_id, **kwargs):
+        self.consultas.append(model_id)
+        if self.erro is not None:
+            raise self.erro
+        return types.SimpleNamespace(id=model_id, display_name="Claude", type="model")
+
+
+def resposta_claude(*textos, stop_reason="end_turn"):
+    """Uma resposta no formato do SDK: bloco de raciocínio (vazio, como vem
+    com display omitido) e os blocos de texto."""
+    blocos = [types.SimpleNamespace(type="thinking", thinking="", signature="sig")]
+    blocos += [types.SimpleNamespace(type="text", text=t) for t in textos]
+    return types.SimpleNamespace(stop_reason=stop_reason, content=blocos,
+                                 model="claude-opus-5-5", stop_details=None)
 
 
 class MercadoLivreFalso:

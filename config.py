@@ -108,6 +108,68 @@ def _caminho_banco() -> str:
     return str(caminho if caminho.is_absolute() else DATA_DIR / caminho)
 
 
+def _inteiro(variavel: str, padrao: int, minimo: int, maximo: int | None = None) -> int:
+    """Número inteiro do ambiente (ou do .env, já carregado acima). Vazio vale
+    o padrão. Valor que não é inteiro ou fica fora da faixa (o .env não corta
+    comentário no fim da linha: '8777 # painel' não é número) não derruba a
+    importação: vale o padrão, com aviso na saída de erro."""
+    bruto = os.getenv(variavel, "").strip()
+    if not bruto:
+        return padrao
+    try:
+        valor = int(bruto)
+    except ValueError:
+        valor = None
+    if valor is None or valor < minimo or (maximo is not None and valor > maximo):
+        faixa = f"de {minimo} a {maximo}" if maximo is not None else f"a partir de {minimo}"
+        print(f"Aviso: {variavel}={bruto!r} não vale; usando {padrao}. Use um número "
+              f"inteiro {faixa}.", file=sys.stderr)
+        return padrao
+    return valor
+
+
+# Menor intervalo do worker, em segundos. Abaixo disso o laço martela o
+# marketplace e a Claude API sem pausa.
+INTERVALO_MINIMO = 30
+
+
+_DESLIGADO = {"false", "0", "nao", "não", "no", "off"}
+_LIGADO = {"true", "1", "sim", "yes", "on"}
+
+
+def _modo_simulacao() -> bool:
+    """MODO_SIMULACAO só desliga com um valor explícito de "não" (false, 0,
+    nao...). Vazio, ausente ou digitado errado deixa a simulação ligada: o
+    engano fica do lado que não manda nada para fora."""
+    return os.getenv("MODO_SIMULACAO", "true").strip().lower() not in _DESLIGADO
+
+
+def _confirmacao(variavel: str) -> bool | None:
+    """Confirmação do dono: True, False, ou None quando ainda não foi dada.
+    None não vira sim nem não: a conformidade trata como "falta confirmar"."""
+    valor = os.getenv(variavel, "").strip().lower()
+    if valor in _LIGADO:
+        return True
+    if valor in _DESLIGADO:
+        return False
+    return None
+
+
+# Níveis de esforço aceitos pela Claude API (output_config.effort).
+ESFORCOS_CLAUDE = ("low", "medium", "high", "xhigh", "max")
+
+
+def _esforco_claude() -> str:
+    valor = os.getenv("ESFORCO_CLAUDE", "").strip().lower()
+    if not valor:
+        return "low"
+    if valor not in ESFORCOS_CLAUDE:
+        print(f"Aviso: ESFORCO_CLAUDE={valor!r} não existe; usando 'low'. "
+              f"Valores aceitos: {', '.join(ESFORCOS_CLAUDE)}.", file=sys.stderr)
+        return "low"
+    return valor
+
+
 @dataclass
 class ConfigMercadoLivre:
     client_id: str = os.getenv("ML_CLIENT_ID", "")
@@ -152,14 +214,19 @@ class ConfigAmazon:
 
 @dataclass
 class ConfigNegocio:
-    """Regras que definem quando o robô age sozinho e quando ele te chama."""
+    """Regras de negócio: margem mínima, rótulo da fila, imposto, prazo e as
+    confirmações do dono que a conformidade exige. Nenhuma delas faz o robô
+    comprar sozinho: toda compra espera aprovação na fila."""
 
     # Margem líquida mínima aceitável. Abaixo disso o pedido é recusado
-    # automaticamente — é a trava que impede vender no prejuízo.
+    # automaticamente (estado RECUSADO_MARGEM) — é a trava que impede vender
+    # no prejuízo.
     margem_minima_pct: float = float(os.getenv("MARGEM_MINIMA_PCT", "18"))
 
-    # Valor acima do qual QUALQUER compra no fornecedor exige seu OK explícito,
-    # mesmo que a margem esteja boa.
+    # Só muda o rótulo na fila: compra até este valor aparece como [ROTINA],
+    # acima dele como [ACIMA DO TETO]. Não existe compra automática abaixo do
+    # teto: toda compra espera o seu OK. O nome da variável ficou da versão
+    # antiga.
     teto_compra_automatica: float = float(os.getenv("TETO_COMPRA_AUTOMATICA", "300"))
 
     # Imposto estimado sobre a venda (Simples Nacional, anexo de comércio).
@@ -170,14 +237,47 @@ class ConfigNegocio:
     # de estourar o prazo do marketplace.
     prazo_fornecedor_dias: int = int(os.getenv("PRAZO_FORNECEDOR_DIAS", "5"))
 
+    # EMITE_NOTA_FISCAL: você emite nota fiscal em toda venda? true ou false.
+    # Sem resposta (None), a conformidade bloqueia as compras pedindo a
+    # confirmação — não existe "sim" presumido.
+    emite_nota: bool | None = _confirmacao("EMITE_NOTA_FISCAL")
+
+
+@dataclass
+class ConfigClaude:
+    """Claude API, usada para redigir as respostas aos compradores.
+
+    O modelo é decisão do dono, em MODELO_CLAUDE. Padrão: claude-opus-5-5, a
+    US$ 4 / US$ 20 por milhão de tokens de entrada / saída. O claude-sonnet-5-5
+    custa metade (US$ 2 / US$ 10); trocar é só mudar a variável. O programa
+    não troca de modelo sozinho; só o fallback da API, numa recusa por
+    política, pode responder (e cobrar) pelo modelo de reserva, e isso fica
+    registrado num evento.
+
+    ESFORCO_CLAUDE vai em output_config.effort: low (padrão, bom para um
+    rascunho curto), medium, high, xhigh ou max. No claude-opus-5-5 o
+    raciocínio fica sempre ligado; o esforço é o que controla custo e demora,
+    e também define max_tokens e o tempo de espera (claude_api.LIMITES_POR_ESFORCO).
+    """
+    modelo: str = os.getenv("MODELO_CLAUDE", "").strip() or "claude-opus-5-5"
+    esforco: str = _esforco_claude()
+
 
 @dataclass
 class Config:
     ml: ConfigMercadoLivre = field(default_factory=ConfigMercadoLivre)
     amazon: ConfigAmazon = field(default_factory=ConfigAmazon)
     negocio: ConfigNegocio = field(default_factory=ConfigNegocio)
+    claude: ConfigClaude = field(default_factory=ConfigClaude)
     db_path: str = _caminho_banco()
-    modo_simulacao: bool = os.getenv("MODO_SIMULACAO", "true").lower() == "true"
+    # Ligado (padrão): aprovar uma ação não manda nada para fora — nem
+    # resposta ao comprador, nem preço ao marketplace — e a ordem de compra sai
+    # marcada como teste. Os executores em worker.py só registram o que fariam.
+    modo_simulacao: bool = _modo_simulacao()
+    # Lidos aqui, depois do .env: o executar.py pega daqui, e não do ambiente
+    # na importação, quando o .env ainda não tinha sido lido.
+    porta_painel: int = _inteiro("PORTA_PAINEL", 8777, 1, 65535)
+    intervalo_worker: int = _inteiro("INTERVALO_WORKER", 300, INTERVALO_MINIMO)
 
 
 config = Config()

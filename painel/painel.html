@@ -55,6 +55,12 @@ section[hidden]{display:none}
   margin-top:.7rem; padding:.5rem .8rem; background:var(--papel);
   border-left:3px solid var(--risco); color:var(--risco); font-size:.92rem;
 }
+.aviso-simulacao{
+  margin:0; border-top:1px solid var(--linha); color:var(--espera); font-size:.88rem;
+}
+.aviso-simulacao[hidden]{display:none}
+.aviso-simulacao p{max-width:1180px; margin:0 auto; padding:.45rem 1.2rem}
+.aviso-simulacao b{font-weight:600}
 
 /* ---------- razão ---------- */
 table{width:100%; border-collapse:collapse; background:var(--papel)}
@@ -165,6 +171,12 @@ kbd{background:var(--papel); border:1px solid var(--linha-forte); padding:.05rem
       <button data-aba="config">Conexões</button>
     </nav>
     <span class="sessao"><span id="operador">—</span><button type="button" id="btn-sair">sair</button></span>
+  </div>
+  <div class="aviso-simulacao" id="aviso-simulacao" role="status" hidden>
+    <p><b>Modo simulação ligado.</b> Aprovar não publica resposta, não muda preço
+      e grava a ordem de compra marcada como teste. O pedido e a pergunta
+      continuam esperando e voltam para a fila quando a simulação for desligada.
+      Para operar de verdade: MODO_SIMULACAO=false no .env e reinicie.</p>
   </div>
 </header>
 
@@ -313,7 +325,7 @@ const $ = s => document.querySelector(s);
 const brl = v => (v ?? 0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
-let fila = [], foco = 0, abaAtiva = 'fila';
+let fila = [], foco = 0, abaAtiva = 'fila', modoSimulacao = true;
 
 /* ---------- navegação ---------- */
 document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
@@ -331,6 +343,8 @@ document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
 async function carregarFila(){
   const d = await (await fetch('/api/pendencias')).json();
   fila = d.itens;
+  modoSimulacao = d.modo_simulacao !== false;
+  $('#aviso-simulacao').hidden = !modoSimulacao;
   $('#cifra').textContent = brl(d.exposicao);
 
   if (d.total === 0){
@@ -342,7 +356,8 @@ async function carregarFila(){
   const aviso = $('#aviso-bloqueio');
   aviso.hidden = d.bloqueadas === 0;
   if (d.bloqueadas) aviso.textContent =
-    `${d.bloqueadas} item(ns) bloqueado(s) pela conformidade. Resolva a causa — não há como aprovar por cima.`;
+    `${d.bloqueadas} item(ns) bloqueado(s) pela conformidade. Cada um diz o que falta e a saída; `
+    + `resolvida a causa, o botão de aprovar aparece. Não há como aprovar por cima.`;
 
   if (!fila.length){
     $('#corpo-fila').innerHTML = `<tr><td colspan="5" class="vazio">
@@ -379,8 +394,15 @@ async function aprovar(id){
   if (!item || item.bloqueado) return;
 
   if (!item.reversivel){
-    // Compra gasta dinheiro: confirmação explícita, sem desfazer.
-    if (!confirm(`Confirmar: ${item.resumo}\n\nIsso envia a ordem ao fornecedor.`)) return;
+    // Compra: confirmação explícita, sem desfazer. O texto diz o que de fato
+    // acontece: o programa grava a ordem; enviar e pagar fica com você.
+    const efeito = modoSimulacao
+      ? 'Modo simulação: a ordem de compra é gravada como teste, na pasta '
+        + 'ordens_de_compra. Nada é enviado ao fornecedor. O pedido continua '
+        + 'esperando a compra e volta para a fila quando a simulação for desligada.'
+      : 'Isso grava a ordem de compra na pasta ordens_de_compra. O programa não '
+        + 'envia nada ao fornecedor: enviar e pagar fica com você.';
+    if (!confirm(`Confirmar: ${item.resumo}\n\n${efeito}`)) return;
     return executarAprovacao(id);
   }
   // Reversível: executa já e oferece desfazer por 6s.

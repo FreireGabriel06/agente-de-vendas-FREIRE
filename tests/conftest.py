@@ -42,7 +42,7 @@ for _nome in (
     "MARGEM_MINIMA_PCT", "TETO_COMPRA_AUTOMATICA", "ALIQUOTA_IMPOSTO_PCT",
     "PRAZO_FORNECEDOR_DIAS", "RETENCAO_PII_DIAS", "SESSAO_OCIOSA_MIN",
     "SESSAO_MAX_HORAS", "PORTA_PAINEL", "HOST_PAINEL", "INTERVALO_WORKER",
-    "MODO_SIMULACAO",
+    "MODO_SIMULACAO", "MODELO_CLAUDE", "ESFORCO_CLAUDE", "EMITE_NOTA_FISCAL",
 ):
     os.environ.pop(_nome, None)
 
@@ -163,8 +163,9 @@ def isolamento(tmp_path, monkeypatch):
 
     cfg = config.config
     monkeypatch.setattr(cfg, "db_path", str(tmp_path / "agente.db"))
-    # Cópias: a troca de código do OAuth altera config.ml em memória.
-    for nome in ("ml", "amazon", "negocio"):
+    # Cópias: a troca de código do OAuth altera config.ml em memória, e os
+    # testes trocam confirmações e modelo em config.negocio e config.claude.
+    for nome in ("ml", "amazon", "negocio", "claude"):
         monkeypatch.setattr(cfg, nome, dataclasses.replace(getattr(cfg, nome)))
     monkeypatch.setattr(configurar, "ARQ_ENV", tmp_path / ".env")
     monkeypatch.setattr(privacidade, "ARQ_CHAVE", tmp_path / ".chave_lgpd")
@@ -268,9 +269,19 @@ def pedido_cifrado():
 
 
 @pytest.fixture
-def fila_de_compras():
-    """Dois pedidos com margem boa, analisados e enfileirados pelo worker.
-    Devolve os ids das pendências, na ordem da fila."""
+def nota_fiscal_confirmada(monkeypatch):
+    """O vendedor confirmou que emite nota fiscal (EMITE_NOTA_FISCAL=true). Sem
+    isso, a conformidade bloqueia toda compra pedindo a confirmação."""
+    import config
+
+    monkeypatch.setattr(config.config.negocio, "emite_nota", True)
+
+
+@pytest.fixture
+def fila_de_compras(nota_fiscal_confirmada):
+    """Dois pedidos com margem boa, analisados e enfileirados pelo worker, com
+    as confirmações que a conformidade exige (produto sem categoria regulada,
+    nota fiscal confirmada). Devolve os ids das pendências, na ordem da fila."""
     import worker
     from core import aprovacao
     from core.estados import Estado
@@ -280,7 +291,8 @@ def fila_de_compras():
         c.execute("INSERT INTO fornecedores (id, nome, canal, contato, prazo_dias)"
                   " VALUES (1, 'Fornecedor Teste', 'email', 'pedidos@fornecedor.example', 4)")
         c.execute("INSERT INTO produtos (id, sku, titulo, custo_fornecedor, peso_kg,"
-                  " fornecedor_id, criado_em) VALUES (1, 'ORG-001', 'Organizador', 18.50, 0.4, 1, ?)",
+                  " fornecedor_id, categoria_regulada, criado_em)"
+                  " VALUES (1, 'ORG-001', 'Organizador', 18.50, 0.4, 1, 'nenhuma', ?)",
                   (agora(),))
         for id_externo in ("3000000001", "3000000002"):
             c.execute("INSERT INTO pedidos (marketplace, id_externo, produto_id, quantidade,"

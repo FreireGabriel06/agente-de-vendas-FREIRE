@@ -109,11 +109,16 @@ desktop.ini
 .chave_lgpd
 # Credential vault key (Fernet). It decrypts marketplace tokens and secrets. Never commit.
 .chave_cofre
-# Empty lock files (one per marketplace) that keep token renewals one at a time across processes.
+# Any other key file with the same prefix.
+.chave_*
+# Empty lock files: .trava_tokens.<marketplace> keeps token renewals one at a time across
+# processes, .trava_ciclo keeps worker cycles one at a time.
 .trava_tokens.*
+.trava_*
 # Legacy plaintext token files (before the credential vault). Never commit.
 .token_ml.json
 .token_shopee.json
+.token_*
 ordens_de_compra/
 .primeira_execucao
 

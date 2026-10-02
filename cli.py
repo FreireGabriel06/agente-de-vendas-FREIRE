@@ -3,15 +3,15 @@
 Painel de comando do robô.
 
   python cli.py init                           cria o banco
-  python cli.py pendencias                     o que está esperando você
-  python cli.py aprovar 7                      aprova e executa a ação 7
+  python cli.py pendencias                     o que está esperando você (e o que está bloqueado)
+  python cli.py aprovar 7                      confere a conformidade, aprova e executa a ação 7
   python cli.py aprovar 7 8 9                  em lote
   python cli.py recusar 7 "custo subiu"        recusa com motivo
   python cli.py nichos "termo a" "termo b"     análise de oportunidade
   python cli.py preco 30 --peso 0.4            sugere preço pra um custo
   python cli.py margem 89.90 30 --peso 0.4     decompõe uma venda
   python cli.py ciclo                          roda uma passada do worker
-  python cli.py rodar --intervalo 300          roda em laço contínuo
+  python cli.py rodar --intervalo 300          roda em laço contínuo (padrão: INTERVALO_WORKER)
   python cli.py eventos                        últimos alertas
   python cli.py operador --usuario ana         cria o operador ou troca a senha
   python cli.py cofre migrar                   copia segredos do .env e tokens antigos pro cofre
@@ -23,38 +23,72 @@ Painel de comando do robô.
 import argparse
 import sys
 
-from config import avisar_pasta_de_dados
+from config import avisar_pasta_de_dados, config
 from db import inicializar, conectar
-from core import aprovacao
+from core import aprovacao, conformidade, privacidade
 from inteligencia import precificacao, tendencias
+
+AVISO_SIMULACAO = ("Modo simulação ligado (MODO_SIMULACAO=true): aprovar não publica "
+                   "resposta, não muda preço e marca a ordem de compra como teste. O pedido "
+                   "e a pergunta continuam esperando: voltam para a fila quando você "
+                   "desligar a simulação.")
 
 
 def cmd_init(_):
     inicializar()
+    privacidade.criar_tabelas_lgpd()
     print("Banco criado. Cadastre fornecedores e produtos antes de ligar o worker.")
+
+
+def _saidas(resultado, recuo: str = "      ") -> None:
+    for v in resultado.bloqueios:
+        print(f"{recuo}Saída ({v.regra}): {v.saida}")
 
 
 def cmd_pendencias(_):
     itens = aprovacao.pendentes()
+    if config.modo_simulacao:
+        print(AVISO_SIMULACAO + "\n")
     if not itens:
         print("Nada pendente.")
         return
     print(f"{len(itens)} ação(ões) esperando sua decisão:\n")
     total = 0.0
+    bloqueadas = 0
     for a in itens:
         valor = f"R$ {a.valor:.2f}" if a.valor else "—"
         print(f"  [{a.id}] {a.tipo:<20} {valor:>12}  {a.resumo}")
-        total += a.valor or 0
-    print(f"\n  Exposição total se você aprovar tudo: R$ {total:.2f}")
+        # A mesma checagem do painel e da aprovação.
+        checagem = aprovacao.checar(a)
+        if checagem.bloqueado:
+            bloqueadas += 1
+            print(f"       {conformidade.motivo_do_bloqueio(checagem)}")
+            _saidas(checagem, "       ")
+        else:
+            total += a.valor or 0
+    if bloqueadas:
+        print(f"\n  {bloqueadas} bloqueada(s) pela conformidade: não há como aprovar "
+              "antes de resolver a causa.")
+    print(f"\n  Exposição se você aprovar todas as liberadas: R$ {total:.2f}")
 
 
 def cmd_aprovar(args):
+    """Aprova pela mesma porta do painel (core/aprovacao.aprovar): item
+    bloqueado pela conformidade não executa, e a recusa traz o mesmo motivo
+    que o painel devolve com HTTP 409."""
     from worker import EXECUTORES
-    ok, falhas = aprovacao.aprovar_em_lote(args.ids, EXECUTORES)
-    for i in ok:
-        print(f"  ✓ {i} executada")
-    for i, erro in falhas:
-        print(f"  ✗ {i} falhou: {erro}")
+    for i in args.ids:
+        try:
+            resultado = aprovacao.aprovar(i, EXECUTORES)
+        except aprovacao.BloqueadoPelaConformidade as e:
+            print(f"  ✗ {i} não executada. {e}")
+            _saidas(e.resultado)
+            continue
+        except Exception as e:
+            print(f"  ✗ {i} falhou: {e}")
+            continue
+        situacao = "simulada" if aprovacao.foi_simulado(resultado) else "executada"
+        print(f"  ✓ {i} {situacao}: {resultado}")
 
 
 def cmd_recusar(args):
@@ -229,7 +263,7 @@ def main():
     m.add_argument("--peso", type=float, default=0.3); m.add_argument("--tipo", default="classico")
     m.set_defaults(func=cmd_margem)
 
-    ro = sub.add_parser("rodar"); ro.add_argument("--intervalo", type=int, default=300); ro.set_defaults(func=cmd_rodar)
+    ro = sub.add_parser("rodar"); ro.add_argument("--intervalo", type=int, default=None); ro.set_defaults(func=cmd_rodar)
     ev = sub.add_parser("eventos"); ev.add_argument("-n", type=int, default=25); ev.set_defaults(func=cmd_eventos)
 
     op = sub.add_parser("operador"); op.add_argument("--usuario", required=True)

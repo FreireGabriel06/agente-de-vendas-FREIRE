@@ -107,7 +107,7 @@ if [ ! -f "$DADOS/.primeira_execucao" ]; then
   fi
 fi
 
-echo "  Abrindo o painel em http://127.0.0.1:8777"
+echo "  Abrindo o painel. O endereço aparece logo abaixo; a porta vem de PORTA_PAINEL, padrão 8777."
 echo "  Ctrl+C encerra."
 echo
 exec $PY executar.py
