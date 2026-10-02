@@ -16,7 +16,7 @@ a = Analysis(
         'core.estados', 'core.aprovacao', 'core.conformidade', 'core.privacidade',
         'core.cofre',
         'inteligencia.precificacao', 'inteligencia.tendencias',
-        'atendimento.persona', 'atendimento.bot', 'worker',
+        'atendimento.persona', 'atendimento.bot', 'atendimento.claude_api', 'worker',
     ],
     hookspath=[], runtime_hooks=[], excludes=['matplotlib', 'tkinter'],
     noarchive=False,

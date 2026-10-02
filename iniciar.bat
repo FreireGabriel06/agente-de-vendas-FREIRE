@@ -122,7 +122,7 @@ if not exist "!DADOS!\.primeira_execucao" (
   echo.
 )
 
-echo   Abrindo o painel em http://127.0.0.1:8777
+echo   Abrindo o painel. O endereco aparece logo abaixo; a porta vem de PORTA_PAINEL, padrao 8777.
 echo   Feche esta janela ou tecle Ctrl+C para encerrar.
 echo.
 python executar.py

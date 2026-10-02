@@ -14,6 +14,9 @@ Decisões de UX que valem explicar:
     Modal em tudo cansa; desfazer só funciona se o dano for reversível.
   - Item bloqueado pela conformidade não tem botão de aprovar. Não é aviso
     que você ignora clicando — o caminho não existe até a causa ser resolvida.
+    A checagem é a mesma do worker e do cli.py (core/conformidade), e falta
+    de dado bloqueia: nada aqui presume o valor que libera.
+  - Com MODO_SIMULACAO ligado, a tela diz isso no topo.
 """
 import asyncio
 import html
@@ -26,6 +29,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from config import config
 from db import conectar, inicializar, registrar_evento
 from core import aprovacao, cofre, conformidade, privacidade, seguranca
 from core.estados import Estado, ESTADOS_CRITICOS, historico
@@ -71,25 +75,11 @@ async def exigir_sessao(request: Request, call_next):
 
 # ------------------------------------------------------------------ Dados
 
-def _contexto_conformidade(pendencia) -> dict:
-    p = pendencia.payload
-    return {
-        "marketplace": p.get("marketplace"),
-        "envio_direto_fornecedor": p.get("envio_direto_fornecedor", False),
-        "reembalagem_confirmada": p.get("reembalagem_confirmada", True),
-        "prazo_fornecedor_dias": p.get("prazo_fornecedor_dias"),
-        "prazo_anuncio_dias": p.get("prazo_anuncio_dias"),
-        "margem_pct": p.get("margem_prevista"),
-        "categoria_regulada": p.get("categoria_regulada"),
-        "habilitacao_confirmada": p.get("habilitacao_confirmada", True),
-        "emite_nota": p.get("emite_nota", True),
-    }
-
-
 def _pendencias_com_conformidade() -> list[dict]:
     itens = []
     for a in aprovacao.pendentes():
-        res = conformidade.verificar(_contexto_conformidade(a))
+        # A mesma checagem que core/aprovacao.aprovar faz antes de executar.
+        res = aprovacao.checar(a)
         itens.append({
             "id": a.id,
             "tipo": a.tipo,
@@ -98,9 +88,11 @@ def _pendencias_com_conformidade() -> list[dict]:
             "margem": a.payload.get("margem_prevista"),
             "marketplace": a.payload.get("marketplace", ""),
             "bloqueado": res.bloqueado,
+            "motivo": conformidade.motivo_do_bloqueio(res) if res.bloqueado else "",
             "violacoes": [
                 {"regra": v.regra, "severidade": v.severidade.value,
-                 "mensagem": v.mensagem, "saida": v.saida, "fonte": v.fonte}
+                 "mensagem": v.mensagem, "saida": v.saida, "fonte": v.fonte,
+                 "confirmacao": v.confirmacao}
                 for v in res.violacoes
             ],
             "reversivel": a.tipo != "compra_fornecedor",
@@ -117,6 +109,7 @@ def api_pendencias():
         "total": len(itens),
         "bloqueadas": len(itens) - len(liberadas),
         "exposicao": round(sum(i["valor"] or 0 for i in liberadas), 2),
+        "modo_simulacao": config.modo_simulacao,
     }
 
 
@@ -164,21 +157,20 @@ def api_comprador(pedido_id: int, request: Request):
 
 @app.post("/api/aprovar/{aprovacao_id}")
 def api_aprovar(aprovacao_id: int, request: Request):
+    """A conformidade é conferida dentro de aprovacao.aprovar, a mesma porta do
+    cli.py: bloqueado volta 409 com o mesmo motivo que o cli.py imprime."""
     from worker import EXECUTORES
-    itens = {i["id"]: i for i in _pendencias_com_conformidade()}
-    alvo = itens.get(aprovacao_id)
-    if alvo is None:
+    if aprovacao.obter_pendente(aprovacao_id) is None:
         raise HTTPException(404, "Pendência não encontrada")
-    if alvo["bloqueado"]:
-        raise HTTPException(409, "Bloqueado pela conformidade: " +
-                            "; ".join(v["mensagem"] for v in alvo["violacoes"]))
     try:
         resultado = aprovacao.aprovar(aprovacao_id, EXECUTORES)
-        registrar_evento("info", "aprovacao",
-                         f"Ação {aprovacao_id} liberada por {request.state.operador}")
-        return {"ok": True, "resultado": resultado}
+    except aprovacao.BloqueadoPelaConformidade as e:
+        raise HTTPException(409, str(e))
     except Exception as e:
         raise HTTPException(500, str(e))
+    registrar_evento("info", "aprovacao",
+                     f"Ação {aprovacao_id} liberada por {request.state.operador}")
+    return {"ok": True, "resultado": resultado, "simulado": aprovacao.foi_simulado(resultado)}
 
 
 @app.post("/api/recusar/{aprovacao_id}")
@@ -248,9 +240,14 @@ def api_eventos(n: int = 40):
 
 @app.post("/api/ciclo")
 async def api_ciclo():
+    """Um ciclo de cada vez (worker.ciclo): com outro em andamento, como o do
+    worker de fundo, volta 409 e nada roda."""
     from worker import ciclo
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, ciclo)
+    resumo = await loop.run_in_executor(None, ciclo)
+    if "pulado" in resumo:
+        raise HTTPException(409, resumo["pulado"])
+    return resumo
 
 
 # ------------------------------------------------------------ Configuração

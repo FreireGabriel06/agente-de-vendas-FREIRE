@@ -14,7 +14,7 @@ class Estado(str, Enum):
     ANALISADO = "ANALISADO"                    # margem calculada e aprovada
     RECUSADO_MARGEM = "RECUSADO_MARGEM"        # margem abaixo do mínimo
     AGUARDANDO_APROVACAO = "AGUARDANDO_APROVACAO"  # esperando seu OK
-    COMPRA_ENVIADA = "COMPRA_ENVIADA"          # pedido feito ao fornecedor
+    COMPRA_ENVIADA = "COMPRA_ENVIADA"          # ordem de compra gravada; o envio ao fornecedor é manual
     COMPRA_CONFIRMADA = "COMPRA_CONFIRMADA"    # fornecedor confirmou
     EM_TRANSITO = "EM_TRANSITO"                # rastreio ativo
     ENTREGUE = "ENTREGUE"

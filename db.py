@@ -18,7 +18,12 @@ CREATE TABLE IF NOT EXISTS produtos (
     peso_kg           REAL DEFAULT 0.3,
     fornecedor_id     INTEGER,
     ativo             INTEGER DEFAULT 1,
-    criado_em         TEXT NOT NULL
+    criado_em         TEXT NOT NULL,
+    -- Confirmações que a conformidade exige (core/conformidade.py). NULL quer
+    -- dizer "ainda não confirmado" e bloqueia a compra até alguém preencher.
+    categoria_regulada     TEXT,     -- 'nenhuma' ou suplemento, cosmetico, brinquedo...
+    habilitacao_confirmada INTEGER,  -- 1 = registro/licença da categoria em dia
+    reembalagem_confirmada INTEGER   -- 1 = sai sem o nome do fornecedor (Amazon)
 );
 
 CREATE TABLE IF NOT EXISTS fornecedores (
@@ -87,6 +92,16 @@ CREATE TABLE IF NOT EXISTS aprovacoes (
     decidido_em   TEXT
 );
 
+-- Perguntas de comprador que o bot já tratou (atendimento/bot.py). O worker
+-- não manda de novo ao modelo uma pergunta que já foi para a fila ou foi
+-- escalada: cada envio é uma chamada paga à Claude API.
+CREATE TABLE IF NOT EXISTS perguntas_tratadas (
+    question_id   TEXT PRIMARY KEY,
+    situacao      TEXT NOT NULL,          -- enfileirada | escalada | tentar_de_novo
+    aprovacao_id  INTEGER,                -- a resposta na fila (sem FK: o demo.py apaga a fila)
+    tratada_em    TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS oportunidades (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     termo             TEXT NOT NULL,
@@ -136,9 +151,26 @@ def conectar(espera: float = 5.0):
         conn.close()
 
 
+# Colunas que entraram depois da primeira versão do banco. O CREATE TABLE IF
+# NOT EXISTS não mexe numa tabela que já existe, então um banco antigo recebe
+# cada coluna aqui, uma vez, sem perder dado. Coluna nova entra vazia (NULL).
+COLUNAS_ACRESCENTADAS = {
+    "produtos": {
+        "categoria_regulada": "TEXT",
+        "habilitacao_confirmada": "INTEGER",
+        "reembalagem_confirmada": "INTEGER",
+    },
+}
+
+
 def inicializar():
     with conectar() as conn:
         conn.executescript(SCHEMA)
+        for tabela, colunas in COLUNAS_ACRESCENTADAS.items():
+            existentes = {linha["name"] for linha in conn.execute(f"PRAGMA table_info({tabela})")}
+            for nome, tipo in colunas.items():
+                if nome not in existentes:
+                    conn.execute(f"ALTER TABLE {tabela} ADD COLUMN {nome} {tipo}")
 
 
 def registrar_evento(nivel: str, origem: str, mensagem: str, detalhe=None):

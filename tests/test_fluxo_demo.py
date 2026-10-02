@@ -1,4 +1,8 @@
-"""Fluxo do demo.py de ponta a ponta: margem -> fila -> aprovação -> COMPRA_ENVIADA."""
+"""Fluxo do demo.py de ponta a ponta: margem -> fila -> aprovação.
+
+Sem simulação, a compra aprovada vai para COMPRA_ENVIADA. Com MODO_SIMULACAO
+ligado (o padrão), a ordem sai marcada como teste e o pedido continua em
+AGUARDANDO_APROVACAO: nada foi comprado."""
 import runpy
 import sys
 from pathlib import Path
@@ -28,11 +32,16 @@ def estados():
             "SELECT id_externo, estado FROM pedidos ORDER BY id")}
 
 
-def test_demo_py_de_ponta_a_ponta(monkeypatch, capsys):
+@pytest.mark.parametrize("simulacao", [True, False])
+def test_demo_py_de_ponta_a_ponta(monkeypatch, capsys, nota_fiscal_confirmada, simulacao):
+    # Produtos do demo.py já dizem que não são de categoria regulada; o
+    # vendedor confirmou a nota fiscal.
+    monkeypatch.setattr(config, "modo_simulacao", simulacao)
     saida = rodar_demo(monkeypatch, capsys)
 
+    aprovado = Estado.AGUARDANDO_APROVACAO if simulacao else Estado.COMPRA_ENVIADA
     assert estados() == {
-        "2000000001": Estado.COMPRA_ENVIADA.value,        # margem boa, aprovado
+        "2000000001": aprovado.value,                     # margem boa, aprovado
         "2000000002": Estado.RECUSADO_MARGEM.value,       # margem abaixo do mínimo
         "2000000003": Estado.AGUARDANDO_APROVACAO.value,  # na fila, sem decisão
         "2000000004": Estado.PROBLEMA.value,              # fornecedor lento demais
@@ -49,19 +58,26 @@ def test_demo_py_de_ponta_a_ponta(monkeypatch, capsys):
     assert aprovacoes == [(pedido_id, "executada"), (pedido_id + 2, "pendente")]
 
     ordem = worker.PASTA_ORDENS / f"oc_{pedido_id}.txt"
-    assert ordem.is_file()
-    assert "mercadolivre#2000000001" in ordem.read_text(encoding="utf-8")
+    texto = ordem.read_text(encoding="utf-8")
+    assert "mercadolivre#2000000001" in texto
+    assert texto.startswith(worker.AVISO_SIMULACAO_OC) is simulacao
     assert "Ordem de compra gravada" in saida
+    assert ("Modo simulação ligado" in saida) is simulacao
 
     passos = [(h["de"], h["para"], h["automatico"]) for h in historico(pedido_id)]
-    assert passos == [
+    esperados = [
         ("NOVO", "ANALISADO", 1),
         ("ANALISADO", "AGUARDANDO_APROVACAO", 1),
-        ("AGUARDANDO_APROVACAO", "COMPRA_ENVIADA", 0),  # só sai com uma pessoa
     ]
+    if not simulacao:
+        esperados.append(("AGUARDANDO_APROVACAO", "COMPRA_ENVIADA", 0))  # só sai com uma pessoa
+    assert passos == esperados
 
 
-def test_item_da_fila_aprovado_pelo_painel_vira_compra_enviada(monkeypatch, capsys, sessao):
+@pytest.mark.parametrize("simulacao", [True, False])
+def test_item_da_fila_aprovado_pelo_painel(monkeypatch, capsys, sessao, nota_fiscal_confirmada,
+                                           simulacao):
+    monkeypatch.setattr(config, "modo_simulacao", simulacao)
     rodar_demo(monkeypatch, capsys)
     cliente, csrf = sessao
 
@@ -72,8 +88,11 @@ def test_item_da_fila_aprovado_pelo_painel_vira_compra_enviada(monkeypatch, caps
 
     r = cliente.post(f"/api/aprovar/{item['id']}", headers=cabecalho(csrf))
     assert r.status_code == 200 and r.json()["ok"] is True
+    assert r.json()["simulado"] is simulacao
 
-    assert estados()["2000000003"] == Estado.COMPRA_ENVIADA.value
+    # Em simulação nada foi comprado: o pedido continua esperando a compra.
+    esperado = Estado.AGUARDANDO_APROVACAO if simulacao else Estado.COMPRA_ENVIADA
+    assert estados()["2000000003"] == esperado.value
     assert cliente.get("/api/pendencias").json()["total"] == 0
     with conectar() as conn:
         pedido_id = conn.execute(

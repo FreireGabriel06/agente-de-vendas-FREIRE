@@ -42,8 +42,7 @@ ARQ_ENV = DATA_DIR / ".env"
 # vai falhar ao carregar a página de retorno. Isso é esperado: o código vem na
 # própria URL, e o painel tem um campo pra você colar essa URL inteira.
 def redirect_padrao() -> str:
-    porta = os.getenv("PORTA_PAINEL", "8777")
-    return f"https://localhost:{porta}/oauth/ml/retorno"
+    return f"https://localhost:{config.porta_painel}/oauth/ml/retorno"
 
 
 # Só o código de erro do OAuth (ex.: invalid_grant) chega à tela. Texto livre
@@ -216,6 +215,9 @@ def status() -> dict:
             "passos": [
                 "Crie uma chave de API no console",
                 "Sem ela, o bot usa só as respostas de FAQ fixo",
+                f"Modelo em uso: {config.claude.modelo} (MODELO_CLAUDE no .env). "
+                "O claude-sonnet-5-5 custa metade; a troca é decisão sua",
+                "Testar conexão confere a chave e o acesso ao modelo sem gastar tokens",
             ],
         },
     }
@@ -321,7 +323,8 @@ def shopee_trocar_code(code: str, shop_id: str) -> dict:
 # ------------------------------------------------------------------ Teste
 
 def testar(marketplace: str) -> dict:
-    """Chama a API de verdade e confirma que a credencial funciona.
+    """Chama a API de verdade e confirma que a credencial funciona. Para a
+    Claude API, só consulta o modelo (models.retrieve), sem gastar tokens.
 
     Erro dos conectores e do cofre chega à tela com a mensagem deles. Qualquer
     outro chega só com o tipo: a mensagem de uma exceção inesperada pode
@@ -352,19 +355,10 @@ def testar(marketplace: str) -> dict:
             return {"ok": True, "detalhe": "Token LWA obtido com sucesso."}
 
         if marketplace == "claude":
-            chave = cofre.segredo("ANTHROPIC_API_KEY")
-            if not chave:
-                return {"ok": False, "detalhe": "Chave não preenchida."}
-            r = requests.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={"x-api-key": chave, "anthropic-version": "2023-06-01",
-                         "content-type": "application/json"},
-                json={"model": "claude-sonnet-4-6", "max_tokens": 10,
-                      "messages": [{"role": "user", "content": "ok"}]},
-                timeout=20)
-            return {"ok": r.status_code == 200,
-                    "detalhe": "Chave válida." if r.status_code == 200
-                               else f"Recusada ({r.status_code})."}
+            # models.retrieve pelo SDK oficial: valida chave e acesso ao
+            # modelo sem mandar mensagem, então sem custo de tokens.
+            from atendimento import claude_api
+            return claude_api.testar_conexao()
 
         return {"ok": False, "detalhe": "Marketplace desconhecido."}
     except (ErroMercadoLivre, ErroShopee, ErroAmazon, cofre.ErroCofre) as e:

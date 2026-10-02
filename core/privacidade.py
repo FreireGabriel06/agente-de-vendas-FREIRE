@@ -46,7 +46,7 @@ SCHEMA_LGPD = """
 CREATE TABLE IF NOT EXISTS acessos_pii (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     pedido_id   INTEGER,
-    operacao    TEXT NOT NULL,      -- leitura | exportacao | eliminacao | expurgo
+    operacao    TEXT NOT NULL,      -- leitura | exportacao | eliminacao | expurgo | rastreio
     ator        TEXT NOT NULL,      -- worker | painel | cli
     finalidade  TEXT NOT NULL,
     ocorrido_em TEXT NOT NULL
@@ -107,6 +107,54 @@ def decifrar(cifrado: str | None) -> str | None:
         return "(não foi possível decifrar)"
 
 
+def _abrir(valor: str | None) -> tuple[str | None, str]:
+    """
+    Abre um campo de PII sem nunca levantar exceção. Devolve (texto, situação):
+
+      - "vazio": NULL ou texto vazio — nunca teve dado, ou ele foi apagado;
+      - "ok": token Fernet aberto com a chave atual;
+      - "ilegivel": token Fernet que a chave atual não abre;
+      - "texto_puro": valor gravado sem cifra (linha do demo.py, linha antiga,
+        ou o '{}' que o expurgo e a eliminação deixam no endereço).
+    """
+    if valor is None or not str(valor).strip():
+        return None, "vazio"
+    from cryptography.fernet import Fernet, InvalidToken
+    try:
+        return Fernet(_obter_chave()).decrypt(str(valor).encode()).decode(), "ok"
+    except (InvalidToken, ValueError):
+        # Todo token Fernet começa com estes bytes (versão 0x80 em base64).
+        if str(valor).startswith("gAAAAA"):
+            return None, "ilegivel"
+        return str(valor), "texto_puro"
+
+
+def _endereco(valor: str | None) -> tuple[dict, str]:
+    """endereco_json pronto para devolver: sempre um dict."""
+    texto, situacao = _abrir(valor)
+    if texto is None:
+        return {}, situacao
+    try:
+        endereco = json.loads(texto)
+    except ValueError:
+        return {}, "ilegivel"
+    if not isinstance(endereco, dict):
+        return {}, "ilegivel"
+    if situacao == "texto_puro" and not endereco:
+        return {}, "vazio"  # o '{}' do expurgo / eliminação
+    return endereco, situacao
+
+
+AVISOS_PII = {
+    "vazio": "Sem dado pessoal neste pedido: ele nunca teve, ou foi apagado pelo "
+             "expurgo de retenção ou a pedido do titular.",
+    "ilegivel": "Parte do dado não abre com a chave LGPD atual (CHAVE_LGPD ou "
+                ".chave_lgpd). Sem a chave certa, ele continua ilegível.",
+    "texto_puro": "Parte do dado está gravada sem cifra (linha antiga ou de "
+                  "demonstração).",
+}
+
+
 def pseudonimizar(identificador: str) -> str:
     """
     Hash estável do id do comprador. Permite reconhecer cliente recorrente e
@@ -138,7 +186,13 @@ def registrar_acesso(pedido_id: int | None, operacao: str, ator: str, finalidade
 
 def ler_comprador(pedido_id: int, ator: str = "painel",
                   finalidade: str = "conferência de entrega") -> dict:
-    """Única porta de leitura de PII. Sempre deixa rastro."""
+    """Única porta de leitura de PII. Sempre deixa rastro.
+
+    Nunca levanta exceção por causa do conteúdo: campo vazio, apagado
+    (endereco_json = '{}' depois do expurgo ou da eliminação), em texto puro
+    (linhas do demo.py) ou que a chave atual não abre vira um resultado limpo,
+    com "aviso" dizendo o que houve. Com tudo cifrado e legível, não há aviso.
+    """
     registrar_acesso(pedido_id, "leitura", ator, finalidade)
     with conectar() as conn:
         p = conn.execute(
@@ -147,11 +201,41 @@ def ler_comprador(pedido_id: int, ator: str = "painel",
         ).fetchone()
     if not p:
         return {}
-    return {
-        "nome": decifrar(p["comprador_nome"]),
-        "identificador": decifrar(p["comprador_id"]),
-        "endereco": json.loads(decifrar(p["endereco_json"]) or "{}"),
-    }
+    nome, s_nome = _abrir(p["comprador_nome"])
+    identificador, s_id = _abrir(p["comprador_id"])
+    endereco, s_endereco = _endereco(p["endereco_json"])
+    resultado = {"nome": nome, "identificador": identificador, "endereco": endereco}
+
+    situacoes = {s_nome, s_id, s_endereco}
+    if situacoes != {"ok"}:
+        if situacoes == {"vazio"}:
+            avisos = [AVISOS_PII["vazio"]]
+        else:
+            avisos = [AVISOS_PII[s] for s in ("ilegivel", "texto_puro") if s in situacoes]
+        if avisos:
+            resultado["aviso"] = " ".join(avisos)
+    return resultado
+
+
+def envio_para_rastreio(pedido_id: int, endereco_json: str | None) -> str | None:
+    """shipping_id do pedido, para o worker consultar o rastreio.
+
+    O endereco_json chega cifrado (worker.ingerir_mercadolivre); o '{}' do
+    expurgo, texto puro ou token que a chave atual não abre devolvem None, sem
+    exceção. O acesso fica registrado (operação 'rastreio', ator 'worker') uma
+    vez por pedido, e não a cada ciclo, para o log de acessos não virar ruído.
+    """
+    endereco, _ = _endereco(endereco_json)
+    envio = endereco.get("shipping_id")
+    if not envio:
+        return None
+    with conectar() as conn:
+        ja_registrado = conn.execute(
+            "SELECT 1 FROM acessos_pii WHERE pedido_id = ? AND operacao = 'rastreio'",
+            (pedido_id,)).fetchone()
+    if not ja_registrado:
+        registrar_acesso(pedido_id, "rastreio", "worker", "atualização de rastreio")
+    return str(envio)
 
 
 # ---------------------------------------------------------------- Retenção
@@ -215,7 +299,7 @@ def exportar_dados(identificador: str) -> dict:
             "valor": l["valor_bruto"],
             "estado": l["estado"],
             "nome": decifrar(l["comprador_nome"]),
-            "endereco": json.loads(decifrar(l["endereco_json"]) or "{}"),
+            "endereco": _endereco(l["endereco_json"])[0],
             "rastreio": l["codigo_rastreio"],
             "data": l["criado_em"],
         })
@@ -269,7 +353,14 @@ def solicitacoes_vencendo(dias: int = 5) -> list:
         ).fetchall()
 
 
-def inicializar_lgpd():
+def criar_tabelas_lgpd():
+    """Só as tabelas (acessos_pii, solicitacoes_titular), sem gerar a chave.
+    O worker e o `cli.py init` chamam isto: sem o painel aberto antes, o
+    registro de acesso do rastreio não teria onde gravar."""
     with conectar() as conn:
         conn.executescript(SCHEMA_LGPD)
+
+
+def inicializar_lgpd():
+    criar_tabelas_lgpd()
     _obter_chave()
