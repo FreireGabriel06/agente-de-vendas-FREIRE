@@ -111,7 +111,11 @@ def cmd_aprovar(args):
 
 
 def cmd_recusar(args):
-    aprovacao.recusar(args.id, args.motivo)
+    try:
+        aprovacao.recusar(args.id, args.motivo)
+    except aprovacao.JaDecidida as e:
+        print(f"  ✗ {e}")
+        return
     print(f"Ação {args.id} recusada.")
 
 
