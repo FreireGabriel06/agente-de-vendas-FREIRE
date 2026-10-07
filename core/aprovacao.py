@@ -74,15 +74,18 @@ def _da_linha(l) -> Aprovacao:
 
 
 def enfileirar(tipo: str, resumo: str, payload: dict,
-               pedido_id: int | None = None, valor: float | None = None) -> int:
+               pedido_id: int | None = None, valor=None) -> int:
+    """valor: Decimal (worker) ou número. A coluna valor é REAL e serve à
+    exposição da tela; recebe o número por CAST a partir do texto, sem float
+    no caminho do Decimal."""
     if tipo not in TIPOS_SENSIVEIS:
         raise ValueError(f"Tipo desconhecido: {tipo}")
     with conectar() as conn:
         cur = conn.execute(
             "INSERT INTO aprovacoes (tipo, pedido_id, resumo, payload_json, valor,"
-            " status, criado_em) VALUES (?,?,?,?,?,'pendente',?)",
+            " status, criado_em) VALUES (?,?,?,?,CAST(? AS REAL),'pendente',?)",
             (tipo, pedido_id, resumo, json.dumps(payload, ensure_ascii=False),
-             valor, agora()),
+             None if valor is None else str(valor), agora()),
         )
         return cur.lastrowid
 

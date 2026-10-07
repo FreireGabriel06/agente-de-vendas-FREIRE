@@ -19,13 +19,32 @@ Painel de comando do robô.
   python cli.py cofre listar                   o que está no cofre (nomes, nunca valores)
   python cli.py cofre apagar mercadolivre refresh_token   revoga uma credencial
   python cli.py cofre apagar --tudo            chave perdida: apaga tudo, sem a chave (pede confirmação)
+
+Cadastro (a mesma validação da API do painel, core/cadastro.py):
+
+  python cli.py fornecedor criar --nome "Fábrica" --canal email --contato pedidos@fabrica.example --prazo 4
+  python cli.py fornecedor editar 1 --prazo 6           só o que for informado muda
+  python cli.py fornecedor desativar 1                  nada é apagado
+  python cli.py fornecedor editar 1 --reativar
+  python cli.py fornecedor listar --ativo true          sem --ativo, lista todos
+  python cli.py produto criar --sku ORG-001 --titulo "Organizador" --custo 18.50 --moeda BRL --peso 0.4 --fornecedor 1
+  python cli.py produto editar ORG-001 --custo 19.90 --moeda BRL   valor e moeda andam juntos
+  python cli.py produto editar ORG-001 --categoria-regulada nenhuma --reembalagem sim
+  python cli.py produto desativar ORG-001               a compra dele fica bloqueada até reativar
+  python cli.py produto listar
+
+Pedido em PROBLEMA, depois de corrigido o cadastro (nenhuma compra dele pode ter saído):
+
+  python cli.py pedido reanalisar 12                    volta para NOVO; o próximo ciclo refaz a análise
+  python cli.py pedido reanalisar 12 --moeda-venda BRL  registra a moeda que o marketplace não informou
 """
 import argparse
+import re
 import sys
 
 from config import avisar_pasta_de_dados, config
 from db import inicializar, conectar
-from core import aprovacao, conformidade, privacidade
+from core import aprovacao, cadastro, conformidade, dinheiro, privacidade
 from inteligencia import precificacao, tendencias
 
 AVISO_SIMULACAO = ("Modo simulação ligado (MODO_SIMULACAO=true): aprovar não publica "
@@ -230,6 +249,234 @@ def cmd_cofre(args):
             print(f"Não havia {args.provedor}/{args.nome} no cofre.")
 
 
+# ------------------------------------------------- Produtos e fornecedores
+#
+# O cli.py só traduz as opções para o mesmo dicionário que a API recebe e
+# chama core/cadastro: a validação e as mensagens são as mesmas do painel.
+# Recusa sai com código 1 e a explicação na saída de erro, nunca traceback.
+
+ATOR_CLI = "cli"
+_SIM_NAO = {"sim": True, "nao": False, "limpar": None}
+_INTEIRO = re.compile(r"[+-]?[0-9]+")
+
+
+def _inteiro_ou_texto(texto: str):
+    """Opção numérica (--prazo, --fornecedor). O que não for inteiro segue
+    como texto, e a validação do cadastro recusa com a mesma mensagem da API;
+    o type=int do argparse responderia outra coisa, em inglês."""
+    limpo = texto.strip()
+    return int(limpo) if _INTEIRO.fullmatch(limpo) else texto
+
+
+def _opcional(texto: str | None):
+    """Texto vazio na linha de comando limpa o campo (vira null)."""
+    return None if texto == "" else texto
+
+
+def _dinheiro(valor, moeda) -> dict | None:
+    """--custo/--pedido-minimo e --moeda viram {"valor", "moeda"}; o que
+    faltar a validação aponta, como na API."""
+    if valor is None and moeda is None:
+        return None
+    dados = {}
+    if valor is not None:
+        dados["valor"] = valor
+    if moeda is not None:
+        dados["moeda"] = moeda
+    return dados
+
+
+def _dados_produto(args) -> dict:
+    dados = {}
+    for campo, valor in (("sku", args.sku), ("titulo", args.titulo), ("peso_kg", args.peso),
+                         ("fornecedor_id", args.fornecedor)):
+        if valor is not None:
+            dados[campo] = valor
+    if args.categoria_ml is not None:
+        dados["categoria_ml"] = _opcional(args.categoria_ml)
+    custo = _dinheiro(args.custo, args.moeda)
+    if custo is not None:
+        dados["custo_fornecedor"] = custo
+    if getattr(args, "sem_fornecedor", False):
+        dados["fornecedor_id"] = None
+    if args.categoria_regulada is not None:
+        dados["categoria_regulada"] = (None if args.categoria_regulada == "limpar"
+                                       else args.categoria_regulada)
+    if args.habilitacao is not None:
+        dados["habilitacao_confirmada"] = _SIM_NAO[args.habilitacao]
+    if args.reembalagem is not None:
+        dados["reembalagem_confirmada"] = _SIM_NAO[args.reembalagem]
+    if getattr(args, "reativar", False):
+        dados["ativo"] = True
+    return dados
+
+
+def _dados_fornecedor(args) -> dict:
+    dados = {}
+    for campo, valor in (("nome", args.nome), ("canal", args.canal), ("contato", args.contato),
+                         ("prazo_dias", args.prazo)):
+        if valor is not None:
+            dados[campo] = valor
+    if args.observacoes is not None:
+        dados["observacoes"] = _opcional(args.observacoes)
+    minimo = _dinheiro(args.pedido_minimo, args.moeda)
+    if minimo is not None:
+        dados["pedido_minimo"] = minimo
+    if getattr(args, "sem_pedido_minimo", False):
+        dados["pedido_minimo"] = None
+    if getattr(args, "reativar", False):
+        dados["ativo"] = True
+    return dados
+
+
+def _valor(dado: dict | None) -> str:
+    if dado is None:
+        return "—"
+    return dinheiro.formatar(dinheiro.do_texto(dado["valor"]), dado["moeda"])
+
+
+def _sim_nao_texto(valor) -> str:
+    return {True: "sim", False: "não"}.get(valor, "—")
+
+
+def _linha_produto(p: dict) -> str:
+    situacao = "" if p["ativo"] else "  [desativado]"
+    fornecedor = p["fornecedor_id"] if p["fornecedor_id"] is not None else "—"
+    return (f"  [{p['id']}] {p['sku']}  {p['titulo']}  custo {_valor(p['custo_fornecedor'])}"
+            f"  peso {p['peso_kg']} kg  fornecedor {fornecedor}{situacao}\n"
+            f"       categoria regulada: {p['categoria_regulada'] or '—'}"
+            f" | habilitação: {_sim_nao_texto(p['habilitacao_confirmada'])}"
+            f" | reembalagem: {_sim_nao_texto(p['reembalagem_confirmada'])}")
+
+
+def _linha_fornecedor(f: dict) -> str:
+    situacao = "" if f["ativo"] else "  [desativado]"
+    return (f"  [{f['id']}] {f['nome']}  {f['canal']}: {f['contato']}  prazo {f['prazo_dias']}d"
+            f"  pedido mínimo {_valor(f['pedido_minimo'])}{situacao}")
+
+
+def _recusar(erro: Exception):
+    """A mesma recusa que a API devolve (422, 409 ou 404), na saída de erro."""
+    if isinstance(erro, cadastro.ErroValidacao):
+        print("Dados inválidos:", file=sys.stderr)
+        for e in erro.erros:
+            print(f"  {e['campo']}: {e['mensagem']}", file=sys.stderr)
+    else:
+        print(str(erro), file=sys.stderr)
+    sys.exit(1)
+
+
+def cmd_produto(args):
+    inicializar()
+    try:
+        if args.acao == "listar":
+            itens = cadastro.listar_produtos(cadastro.filtro_ativo(args.ativo))
+            print("\n".join(_linha_produto(p) for p in itens) if itens
+                  else "Nenhum produto encontrado.")
+            return
+        if args.acao == "criar":
+            p = cadastro.criar_produto(_dados_produto(args), ator=ATOR_CLI)
+            print(f"Produto {p['id']} criado.\n{_linha_produto(p)}")
+            return
+        alvo = cadastro.id_do_sku(args.sku_atual)
+        if args.acao == "editar":
+            p = cadastro.editar_produto(alvo, _dados_produto(args), ator=ATOR_CLI)
+            print(f"Produto {p['id']} alterado.\n{_linha_produto(p)}")
+        else:
+            p = cadastro.desativar_produto(alvo, ator=ATOR_CLI)
+            print(f"Produto {p['id']} desativado (nada foi apagado).\n{_linha_produto(p)}")
+    except (cadastro.ErroValidacao, cadastro.Conflito, cadastro.NaoEncontrado) as e:
+        _recusar(e)
+
+
+def cmd_fornecedor(args):
+    inicializar()
+    try:
+        if args.acao == "listar":
+            itens = cadastro.listar_fornecedores(cadastro.filtro_ativo(args.ativo))
+            print("\n".join(_linha_fornecedor(f) for f in itens) if itens
+                  else "Nenhum fornecedor encontrado.")
+            return
+        if args.acao == "criar":
+            f = cadastro.criar_fornecedor(_dados_fornecedor(args), ator=ATOR_CLI)
+            print(f"Fornecedor {f['id']} criado.\n{_linha_fornecedor(f)}")
+            return
+        alvo = cadastro.id_do_texto(args.id, "Fornecedor")
+        if args.acao == "editar":
+            f = cadastro.editar_fornecedor(alvo, _dados_fornecedor(args), ator=ATOR_CLI)
+            print(f"Fornecedor {f['id']} alterado.\n{_linha_fornecedor(f)}")
+        else:
+            f = cadastro.desativar_fornecedor(alvo, ator=ATOR_CLI)
+            print(f"Fornecedor {f['id']} desativado (nada foi apagado).\n{_linha_fornecedor(f)}")
+        if f.get("aviso"):
+            print(f"Aviso: {f['aviso']}")
+    except (cadastro.ErroValidacao, cadastro.Conflito, cadastro.NaoEncontrado) as e:
+        _recusar(e)
+
+
+def cmd_pedido(args):
+    """Reanálise de um pedido em PROBLEMA (worker.reanalisar): a mesma
+    validação e as mesmas mensagens da rota do painel."""
+    from worker import reanalisar
+
+    inicializar()
+    try:
+        alvo = cadastro.id_do_texto(args.id, "Pedido")
+        dados = {} if args.moeda_venda is None else {"moeda_venda": args.moeda_venda}
+        r = reanalisar(alvo, dados, ator=ATOR_CLI)
+    except (cadastro.ErroValidacao, cadastro.Conflito, cadastro.NaoEncontrado) as e:
+        _recusar(e)
+    if dados:
+        print(f"Moeda da venda do pedido {alvo} registrada: {r['moeda_venda']}.")
+    print(r["mensagem"])
+
+
+def _opcao_listar(p):
+    p.add_argument("--ativo", choices=("true", "false"),
+                   help="só os ativos (true) ou só os desativados (false); sem ela, todos")
+
+
+def _opcoes_produto(p, edicao: bool):
+    if edicao:
+        p.add_argument("sku_atual", metavar="SKU", help="SKU do produto a alterar")
+    p.add_argument("--sku", help="novo SKU" if edicao else "SKU (único)")
+    p.add_argument("--titulo")
+    p.add_argument("--custo", help="custo do fornecedor, com ponto: 18.50 (pede --moeda)")
+    p.add_argument("--moeda", help="moeda do custo, ISO 4217: "
+                                   + ", ".join(sorted(dinheiro.MOEDAS_ACEITAS)))
+    p.add_argument("--peso", help="peso em kg, com ponto: 0.4")
+    vinculo = p.add_mutually_exclusive_group()
+    vinculo.add_argument("--fornecedor", type=_inteiro_ou_texto, help="id do fornecedor (ativo)")
+    if edicao:
+        vinculo.add_argument("--sem-fornecedor", action="store_true",
+                             help="tira o fornecedor do produto")
+        p.add_argument("--reativar", action="store_true")
+    p.add_argument("--categoria-ml", help='categoria do Mercado Livre ("" limpa)')
+    p.add_argument("--categoria-regulada",
+                   help=f"{conformidade.SEM_CATEGORIA_REGULADA}, uma categoria regulada, ou limpar")
+    p.add_argument("--habilitacao", choices=sorted(_SIM_NAO),
+                   help="habilitação da categoria regulada em dia")
+    p.add_argument("--reembalagem", choices=sorted(_SIM_NAO),
+                   help="sai sem o nome do fornecedor (pedido Amazon)")
+
+
+def _opcoes_fornecedor(p, edicao: bool):
+    if edicao:
+        p.add_argument("id", help="id do fornecedor")
+    p.add_argument("--nome")
+    p.add_argument("--canal", help=", ".join(cadastro.CANAIS))
+    p.add_argument("--contato")
+    p.add_argument("--prazo", type=_inteiro_ou_texto,
+                   help=f"prazo em dias ({cadastro.PRAZO_MINIMO} a {cadastro.PRAZO_MAXIMO})")
+    minimo = p.add_mutually_exclusive_group()
+    minimo.add_argument("--pedido-minimo", help="valor, com ponto: 100.00 (pede --moeda)")
+    p.add_argument("--moeda", help="moeda do pedido mínimo, ISO 4217")
+    p.add_argument("--observacoes", help='texto livre ("" limpa)')
+    if edicao:
+        minimo.add_argument("--sem-pedido-minimo", action="store_true")
+        p.add_argument("--reativar", action="store_true")
+
+
 def cmd_eventos(args):
     with conectar() as conn:
         linhas = conn.execute(
@@ -279,6 +526,30 @@ def main():
     ap.add_argument("--tudo", action="store_true",
                     help="apaga todas as credenciais sem precisar da chave (pede confirmação)")
     co.set_defaults(func=cmd_cofre)
+
+    pd = sub.add_parser("produto", help="cadastro de produtos (sem SQL)")
+    acoes_pd = pd.add_subparsers(dest="acao", required=True)
+    _opcao_listar(acoes_pd.add_parser("listar", help="todos, com os desativados marcados"))
+    _opcoes_produto(acoes_pd.add_parser("criar"), edicao=False)
+    _opcoes_produto(acoes_pd.add_parser("editar", help="só o que for informado muda"), edicao=True)
+    acoes_pd.add_parser("desativar", help="desativa sem apagar").add_argument("sku_atual", metavar="SKU")
+    pd.set_defaults(func=cmd_produto)
+
+    fo = sub.add_parser("fornecedor", help="cadastro de fornecedores (sem SQL)")
+    acoes_fo = fo.add_subparsers(dest="acao", required=True)
+    _opcao_listar(acoes_fo.add_parser("listar", help="todos, com os desativados marcados"))
+    _opcoes_fornecedor(acoes_fo.add_parser("criar"), edicao=False)
+    _opcoes_fornecedor(acoes_fo.add_parser("editar", help="só o que for informado muda"), edicao=True)
+    acoes_fo.add_parser("desativar", help="desativa sem apagar").add_argument("id")
+    fo.set_defaults(func=cmd_fornecedor)
+
+    pe = sub.add_parser("pedido", help="pedido em PROBLEMA: reanalisar depois de corrigir o cadastro")
+    acoes_pe = pe.add_subparsers(dest="acao", required=True)
+    re_ = acoes_pe.add_parser("reanalisar", help="volta o pedido para NOVO; o próximo ciclo refaz a análise")
+    re_.add_argument("id", help="id do pedido")
+    re_.add_argument("--moeda-venda", help="moeda da venda, ISO 4217, só para pedido sem moeda: "
+                                           + ", ".join(sorted(dinheiro.MOEDAS_ACEITAS)))
+    pe.set_defaults(func=cmd_pedido)
 
     args = p.parse_args()
     # Antes de qualquer gravação: sem AGENTE_DADOS, diz qual pasta vai ser usada.

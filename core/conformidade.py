@@ -15,10 +15,12 @@ dado falta e onde preencher. Nenhum contexto presume o valor que libera.
 Cada regra tem fonte declarada. Quando a plataforma mudar a política, você
 sabe qual regra revisar e onde conferir.
 """
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 
 from config import _DESLIGADO, _LIGADO, config
+from core import dinheiro
 from db import conectar
 
 
@@ -97,11 +99,44 @@ def _falta(regra: str, mensagem: str, saida: str, fonte: str) -> Violacao:
                     saida=saida, fonte=fonte, confirmacao=True)
 
 
-def _no_produto(ctx: dict, coluna: str, valor: str) -> str:
-    """Comando de exemplo para preencher a confirmação no cadastro do produto
-    (o cadastro ainda é SQL à mão)."""
-    sku = str(ctx.get("sku") or "SKU").replace("'", "''")
-    return f"UPDATE produtos SET {coluna} = {valor} WHERE sku = '{sku}';"
+# Opção do `cli.py produto editar` que preenche cada confirmação do produto.
+_OPCAO_NO_CLI = {
+    "categoria_regulada": "--categoria-regulada",
+    "habilitacao_confirmada": "--habilitacao",
+    "reembalagem_confirmada": "--reembalagem",
+}
+
+
+# SKU que vai como está num comando para colar no terminal (PowerShell, cmd,
+# bash): só letras e algarismos ASCII, ponto, hífen e sublinhado, sem começar
+# por hífen (o argparse leria como opção). Aspas não bastam: dentro delas o
+# PowerShell e o bash ainda expandem $(...).
+_SKU_PARA_TERMINAL = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._-]*")
+
+
+def sku_no_comando(sku) -> str:
+    """O SKU para a linha de comando que se copia, ou o marcador SKU quando
+    ele tem caractere que o terminal interpretaria (X;calc, X$(calc), A&B)."""
+    texto = str(sku or "")
+    return texto if _SKU_PARA_TERMINAL.fullmatch(texto) else "SKU"
+
+
+def _no_produto(ctx: dict, coluna: str, valor: bool | str) -> str:
+    """Como preencher a confirmação no cadastro do produto (core/cadastro.py):
+    pelo cli.py ou pela API do painel. O SQL equivalente fica por último, para
+    quem ainda usa banco à mão. valor: True ou o texto da categoria."""
+    sku = str(ctx.get("sku") or "SKU")
+    no_cli = sku_no_comando(sku)
+    if valor is True:
+        cli, em_json, em_sql = "sim", "true", "1"
+    else:
+        cli, em_json, em_sql = valor, f'"{valor}"', f"'{valor}'"
+    sku_sql = sku.replace("'", "''")
+    troque = (" (troque SKU pelo SKU do produto, que está no SQL abaixo: ele tem caracteres "
+              "que o terminal interpretaria)" if no_cli != sku else "")
+    return (f"python cli.py produto editar {no_cli} {_OPCAO_NO_CLI[coluna]} {cli}{troque} "
+            f"(ou PATCH /api/produtos/<id> com {{\"{coluna}\": {em_json}}}; em SQL: "
+            f"UPDATE produtos SET {coluna} = {em_sql} WHERE sku = '{sku_sql}';)")
 
 
 # ---------------------------------------------------------------- Regras
@@ -135,7 +170,9 @@ def _amazon_remetente_terceiro(ctx: dict) -> Violacao | None:
             "AMZ-DROPSHIP",
             "Falta saber se o fornecedor despacha direto ao comprador (pedido Amazon).",
             "Vincule o produto a um fornecedor com canal cadastrado (email, whatsapp, "
-            "api ou portal) na tabela fornecedores.",
+            "api ou portal): python cli.py produto editar SKU --fornecedor ID; o canal "
+            "muda com python cli.py fornecedor editar ID --canal email (ou pela API do "
+            "painel, /api/produtos e /api/fornecedores).",
             fonte,
         )
     if envio_direto:
@@ -161,7 +198,7 @@ def _amazon_identificacao_fornecedor(ctx: dict) -> Violacao | None:
             "AMZ-REEMBALAGEM",
             "Falta confirmar a reembalagem deste produto para pedido Amazon.",
             "Depois de garantir que nota, caixa e romaneio saem sem o nome do "
-            "fornecedor, marque no produto: " + _no_produto(ctx, "reembalagem_confirmada", "1"),
+            "fornecedor, marque no produto: " + _no_produto(ctx, "reembalagem_confirmada", True),
             fonte,
         )
     if not confirmada:
@@ -177,6 +214,146 @@ def _amazon_identificacao_fornecedor(ctx: dict) -> Violacao | None:
     return None
 
 
+FORNECEDOR_TROCADO = "FORNECEDOR-TROCADO"
+CUSTO_ALTERADO = "CUSTO-ALTERADO"
+# Regras cujo bloqueio o worker resolve sozinho: recusa a ordem velha e monta
+# outra com os dados atuais do produto, refazendo a margem (worker.py).
+REFAZEM_A_ORDEM = frozenset({FORNECEDOR_TROCADO, CUSTO_ALTERADO})
+REFAZER_A_ORDEM = ("O worker recusa esta ordem e a monta de novo, com o fornecedor e o custo "
+                   "atuais do produto e a margem refeita, no próximo ciclo (ou agora: python "
+                   "cli.py ciclo).")
+
+
+@_regra("compra_fornecedor")
+def _fornecedor_trocado(ctx: dict) -> Violacao | None:
+    """A ordem na fila vai para o fornecedor gravado nela quando foi montada
+    (nome, canal e contato copiados no payload). Se o produto passou a outro
+    fornecedor, aprovar mandaria a compra ao antigo: bloqueia, e o worker
+    monta a ordem de novo com o fornecedor atual (montar_ordens_de_compra).
+    Fila gravada por versão anterior, sem o id do fornecedor: falha fechada."""
+    fonte = "Cadastro de produtos e fornecedores (core/cadastro.py)"
+    da_ordem = ctx.get("fornecedor_da_ordem")
+    if da_ordem is None:
+        return _falta(
+            FORNECEDOR_TROCADO,
+            "Falta o id do fornecedor desta ordem (fila gravada por uma versão anterior).",
+            REFAZER_A_ORDEM,
+            fonte,
+        )
+    do_produto = ctx.get("fornecedor_do_produto")
+    if do_produto != da_ordem:
+        agora_usa = (f"usa o fornecedor {do_produto}" if do_produto is not None
+                     else "não tem fornecedor")
+        return Violacao(
+            regra=FORNECEDOR_TROCADO,
+            severidade=Severidade.BLOQUEIO,
+            mensagem=f"A ordem foi montada para o fornecedor {da_ordem}, mas o produto "
+                     f"agora {agora_usa}.",
+            saida=f"{REFAZER_A_ORDEM} Para manter esta ordem, volte o produto ao "
+                  f"fornecedor {da_ordem}.",
+            fonte=fonte,
+        )
+    return None
+
+
+@_regra("compra_fornecedor")
+def _fornecedor_desativado(ctx: dict) -> Violacao | None:
+    """Fornecedor desativado no cadastro (core/cadastro.py) não recebe compra,
+    nem a que já estava na fila quando ele foi desativado. O fornecedor é o
+    da ordem, para quem ela vai. Sem fornecedor, quem pede o dado é a regra
+    do prazo."""
+    if ctx.get("fornecedor_ativo") is False:
+        return Violacao(
+            regra="FORNECEDOR-DESATIVADO",
+            severidade=Severidade.BLOQUEIO,
+            mensagem="O fornecedor desta ordem está desativado no cadastro.",
+            saida="Reative o fornecedor (python cli.py fornecedor editar ID --reativar), "
+                  "ou vincule outro ao produto (python cli.py produto editar SKU "
+                  "--fornecedor ID): aí o worker recusa esta ordem e a monta de novo "
+                  "com o novo fornecedor.",
+            fonte="Cadastro de fornecedores (core/cadastro.py)",
+        )
+    return None
+
+
+@_regra("compra_fornecedor")
+def _produto_desativado(ctx: dict) -> Violacao | None:
+    """Produto desativado no cadastro (core/cadastro.py) não é comprado: nem a
+    compra nova (o worker manda o pedido para PROBLEMA), nem a que já estava
+    na fila quando ele foi desativado. O pedido continua sendo importado e
+    analisado: a venda existe no marketplace e pede uma decisão sua."""
+    if ctx.get("produto_ativo") is False:
+        sku = sku_no_comando(ctx.get("sku"))
+        return Violacao(
+            regra="PRODUTO-DESATIVADO",
+            severidade=Severidade.BLOQUEIO,
+            mensagem="O produto desta ordem está desativado no cadastro.",
+            saida=f"Reative o produto (python cli.py produto editar {sku} --reativar, ou PATCH "
+                  "/api/produtos/<id> com {\"ativo\": true}): a compra que está na fila fica "
+                  "liberada, e o pedido que já foi para PROBLEMA volta com python cli.py "
+                  "pedido reanalisar ID. Ou cancele a venda no marketplace.",
+            fonte="Cadastro de produtos (core/cadastro.py)",
+        )
+    return None
+
+
+def _quantidade(valor) -> int | None:
+    """Quantidade gravada no payload da fila: inteiro positivo, ou None."""
+    if isinstance(valor, int) and not isinstance(valor, bool) and valor > 0:
+        return valor
+    return None
+
+
+def custo_confere(valor, moeda, quantidade, custo, moeda_custo) -> bool | None:
+    """O valor (Decimal) e a moeda de uma ordem são o custo atual do produto
+    vezes a quantidade, na mesma moeda? None quando algum deles não se lê.
+    Moeda None dos dois lados confere: os dois são "moeda não informada". A
+    regra CUSTO-ALTERADO e o worker (antes de montar a ordem) usam esta
+    mesma conta."""
+    quantidade = _quantidade(quantidade)
+    if valor is None or custo is None or quantidade is None:
+        return None
+    return valor == custo * quantidade and moeda == moeda_custo
+
+
+@_regra("compra_fornecedor")
+def _custo_alterado(ctx: dict) -> Violacao | None:
+    """O valor e a moeda da ordem são o custo do produto vezes a quantidade de
+    quando ela foi montada, e a margem dela foi calculada com eles. Se o
+    custo ou a moeda mudou no cadastro depois (inclusive numa troca de
+    fornecedor), aprovar pagaria o valor velho, com a margem velha: bloqueia,
+    e o worker monta a ordem de novo, refazendo a margem com o custo atual.
+    Ordem sem moeda (fila de versão anterior) não confere com custo que já
+    tem moeda. Valor, quantidade ou custo que não se lê: falha fechada."""
+    fonte = "Cadastro de produtos (core/cadastro.py)"
+    valor = ctx.get("valor_da_ordem")
+    custo = ctx.get("custo_do_produto")
+    quantidade = _quantidade(ctx.get("quantidade"))
+    da_ordem, do_custo = ctx.get("moeda_da_ordem"), ctx.get("moeda_do_custo")
+    confere = custo_confere(valor, da_ordem, quantidade, custo, do_custo)
+    if confere is None:
+        return _falta(
+            CUSTO_ALTERADO,
+            "Falta conferir o valor da ordem com o custo atual do produto (o valor, a "
+            "quantidade ou o custo não se lê).",
+            "Confira o custo do produto (python cli.py produto editar SKU --custo VALOR "
+            f"--moeda BRL). {REFAZER_A_ORDEM}",
+            fonte,
+        )
+    if not confere:
+        esperado = custo * quantidade
+        return Violacao(
+            regra=CUSTO_ALTERADO,
+            severidade=Severidade.BLOQUEIO,
+            mensagem=f"A ordem diz {dinheiro.formatar(valor, da_ordem)}, mas o custo atual do "
+                     f"produto dá {dinheiro.formatar(esperado, do_custo)} ({quantidade} x "
+                     f"{dinheiro.formatar(custo, do_custo)}).",
+            saida=REFAZER_A_ORDEM,
+            fonte=fonte,
+        )
+    return None
+
+
 @_regra("compra_fornecedor")
 def _prazo_incompativel(ctx: dict) -> Violacao | None:
     """Prazo de fábrica maior que a promessa do anúncio gera atraso sistêmico."""
@@ -186,8 +363,9 @@ def _prazo_incompativel(ctx: dict) -> Violacao | None:
         return _falta(
             "PRAZO",
             "Falta o prazo do fornecedor (ou o prazo_dias gravado não é um número de dias).",
-            "Preencha prazo_dias do fornecedor (tabela fornecedores) com um número de "
-            "dias, ou PRAZO_FORNECEDOR_DIAS no .env.",
+            "Preencha prazo_dias do fornecedor com um número de dias (python cli.py "
+            "fornecedor editar ID --prazo 5, ou PATCH /api/fornecedores/<id>), ou "
+            "PRAZO_FORNECEDOR_DIAS no .env.",
             fonte,
         )
     prazo_anuncio = ctx.get("prazo_anuncio_dias")
@@ -229,7 +407,7 @@ def _categoria_restrita(ctx: dict) -> Violacao | None:
             "Falta dizer se o produto é de categoria regulada.",
             f"No cadastro do produto, preencha categoria_regulada com "
             f"'{SEM_CATEGORIA_REGULADA}' ou com uma destas: {lista}. Exemplo: "
-            + _no_produto(ctx, "categoria_regulada", f"'{SEM_CATEGORIA_REGULADA}'"),
+            + _no_produto(ctx, "categoria_regulada", SEM_CATEGORIA_REGULADA),
             fonte,
         )
     cat = str(bruta).strip().lower()
@@ -248,7 +426,7 @@ def _categoria_restrita(ctx: dict) -> Violacao | None:
             "CATEGORIA-RESTRITA",
             f"Categoria '{cat}' exige habilitação; falta confirmar.",
             f"{CATEGORIAS_RESTRITAS[cat]} Com ela em dia: "
-            + _no_produto(ctx, "habilitacao_confirmada", "1"),
+            + _no_produto(ctx, "habilitacao_confirmada", True),
             fonte,
         )
     if not habilitacao:
@@ -270,8 +448,9 @@ def _margem_negativa(ctx: dict) -> Violacao | None:
         return _falta(
             "MARGEM-NEGATIVA",
             "Margem prevista não calculada.",
-            "Cadastre o custo do produto (produtos.custo_fornecedor) para o worker "
-            "calcular a margem, ou informe a margem do novo preço.",
+            "Cadastre o custo do produto com a moeda (python cli.py produto editar SKU "
+            "--custo 18.50 --moeda BRL) para o worker calcular a margem, que só sai com "
+            "custo e venda em BRL; ou informe a margem do novo preço.",
             fonte,
         )
     if m < 0:
@@ -400,9 +579,10 @@ def verificar(contexto: dict) -> Resultado:
 # ------------------------------------------------- Contexto de uma pendência
 
 def _sim_nao(valor) -> bool | None:
-    """Confirmação gravada à mão no cadastro (SQL). Leitura estrita, sem
-    bool() no valor cru: numa coluna INTEGER do SQLite, 'nao' fica TEXT e
-    bool('nao') daria True.
+    """Confirmação lida do cadastro. O cadastro novo (core/cadastro.py) grava
+    só 1, 0 ou NULL; o banco antigo pode ter texto digitado à mão em SQL.
+    Leitura estrita, sem bool() no valor cru: numa coluna INTEGER do SQLite,
+    'nao' fica TEXT e bool('nao') daria True.
 
       - 1, ou true/sim/yes/on: True;
       - 0, ou false/nao/não/no/off: False (as mesmas palavras do .env);
@@ -422,7 +602,8 @@ def _sim_nao(valor) -> bool | None:
 
 
 def prazo_do_fornecedor(valor) -> int | float | None:
-    """prazo_dias do fornecedor, gravado à mão no cadastro (SQL). Vazio ou 0
+    """prazo_dias do fornecedor. O cadastro novo só aceita inteiro de 1 a 365;
+    o banco antigo pode ter o que foi digitado à mão em SQL. Vazio ou 0
     vale PRAZO_FORNECEDOR_DIAS, como sempre valeu; um número vale ele mesmo.
     Texto que não é número ('6 dias' fica TEXT numa coluna INTEGER do SQLite)
     é None, "falta o prazo", em vez de quebrar a comparação com TypeError."""
@@ -446,34 +627,71 @@ def _envio_direto(canal: str | None) -> bool | None:
     return None
 
 
+def _id(valor) -> int | None:
+    """Id gravado no payload da fila: inteiro positivo, ou None."""
+    if isinstance(valor, int) and not isinstance(valor, bool) and valor > 0:
+        return valor
+    return None
+
+
 def _fatos_da_compra(payload: dict) -> dict:
     """Fatos de produto e fornecedor lidos do banco na hora da checagem, e não
     copiados para a fila: a confirmação preenchida depois libera o item que
-    já está esperando, e a retirada volta a bloquear."""
-    sku = payload.get("sku")
-    linha = None
-    if sku:
-        with conectar() as conn:
-            linha = conn.execute(
-                "SELECT pr.categoria_regulada, pr.habilitacao_confirmada,"
-                " pr.reembalagem_confirmada, f.id AS fornecedor_id, f.canal, f.prazo_dias"
-                " FROM produtos pr LEFT JOIN fornecedores f ON f.id = pr.fornecedor_id"
-                " WHERE pr.sku = ?", (sku,),
-            ).fetchone()
-    if linha is None:
-        return {"categoria_regulada": None, "habilitacao_confirmada": None,
-                "reembalagem_confirmada": None, "envio_direto_fornecedor": None,
-                "prazo_fornecedor_dias": None}
-    prazo = None
-    if linha["fornecedor_id"] is not None:
-        prazo = prazo_do_fornecedor(linha["prazo_dias"])
-    return {
-        "categoria_regulada": linha["categoria_regulada"],
-        "habilitacao_confirmada": _sim_nao(linha["habilitacao_confirmada"]),
-        "reembalagem_confirmada": _sim_nao(linha["reembalagem_confirmada"]),
-        "envio_direto_fornecedor": _envio_direto(linha["canal"]),
-        "prazo_fornecedor_dias": prazo,
+    já está esperando, e a retirada volta a bloquear.
+
+    O produto vem pelo id gravado na fila (ou pelo do pedido), nunca pelo SKU:
+    o SKU pode ser editado e passar a outro produto. O fornecedor é o da
+    ordem, o id gravado na fila, porque é para ele que a ordem vai; o atual
+    do produto só serve para ver se houve troca (FORNECEDOR-TROCADO).
+
+    O valor, a moeda e a quantidade vêm da ordem; o custo, do cadastro de
+    agora: CUSTO-ALTERADO confere os dois."""
+    produto_id = _id(payload.get("produto_id"))
+    fornecedor_id = _id(payload.get("fornecedor_id"))
+    pedido_id = _id(payload.get("pedido_id"))
+    produto = fornecedor = None
+    with conectar() as conn:
+        if produto_id is None and pedido_id is not None:
+            pedido = conn.execute("SELECT produto_id FROM pedidos WHERE id = ?",
+                                  (pedido_id,)).fetchone()
+            produto_id = _id(pedido["produto_id"]) if pedido else None
+        if produto_id is not None:
+            produto = conn.execute(
+                "SELECT sku, categoria_regulada, habilitacao_confirmada,"
+                " reembalagem_confirmada, fornecedor_id, ativo, custo_fornecedor,"
+                " custo_fornecedor_dec, custo_fornecedor_moeda FROM produtos WHERE id = ?",
+                (produto_id,)).fetchone()
+        if fornecedor_id is not None:
+            fornecedor = conn.execute("SELECT canal, prazo_dias, ativo FROM fornecedores"
+                                      " WHERE id = ?", (fornecedor_id,)).fetchone()
+    fatos = {
+        "fornecedor_da_ordem": fornecedor_id,
+        "fornecedor_do_produto": produto["fornecedor_id"] if produto else None,
+        "categoria_regulada": produto["categoria_regulada"] if produto else None,
+        "habilitacao_confirmada": _sim_nao(produto["habilitacao_confirmada"]) if produto else None,
+        "reembalagem_confirmada": _sim_nao(produto["reembalagem_confirmada"]) if produto else None,
+        "envio_direto_fornecedor": None, "prazo_fornecedor_dias": None, "fornecedor_ativo": None,
+        # Fila antiga traz o valor como número e sem moeda; a nova, texto e moeda.
+        "valor_da_ordem": dinheiro.do_real(payload.get("valor")),
+        "moeda_da_ordem": dinheiro.moeda_lida(payload.get("moeda")),
+        "quantidade": payload.get("quantidade"),
+        "produto_ativo": None, "custo_do_produto": None, "moeda_do_custo": None,
     }
+    if produto is not None:
+        fatos.update(
+            sku=produto["sku"],  # o SKU de hoje, para a saída que se copia
+            produto_ativo=produto["ativo"] != 0,  # NULL (banco antigo) conta como ativo
+            custo_do_produto=dinheiro.ler(produto["custo_fornecedor_dec"],
+                                          produto["custo_fornecedor"]),
+            moeda_do_custo=dinheiro.moeda_lida(produto["custo_fornecedor_moeda"]),
+        )
+    if fornecedor is not None:
+        fatos.update(
+            envio_direto_fornecedor=_envio_direto(fornecedor["canal"]),
+            prazo_fornecedor_dias=prazo_do_fornecedor(fornecedor["prazo_dias"]),
+            fornecedor_ativo=fornecedor["ativo"] != 0,  # NULL (banco antigo) conta como ativo
+        )
+    return fatos
 
 
 def contexto_da_pendencia(tipo: str, payload: dict) -> dict:
@@ -496,7 +714,7 @@ def contexto_da_pendencia(tipo: str, payload: dict) -> dict:
         "emite_nota": config.negocio.emite_nota,
     }
     if tipo == "compra_fornecedor":
-        # Produto e fornecedor: o banco é a fonte, não o que veio na fila.
+        # Produto e fornecedor: o banco é a fonte, achado pelos ids da fila.
         contexto.update(_fatos_da_compra(payload))
     return contexto
 
