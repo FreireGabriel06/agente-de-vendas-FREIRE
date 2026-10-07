@@ -20,7 +20,8 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parent
 
 DESTINOS = {
-    "core":         ["estados.py", "aprovacao.py", "conformidade.py", "privacidade.py"],
+    "core":         ["estados.py", "aprovacao.py", "conformidade.py", "privacidade.py",
+                     "cadastro.py", "dinheiro.py"],
     "conectores":   ["mercadolivre.py", "shopee.py", "amazon.py"],
     "inteligencia": ["precificacao.py", "tendencias.py"],
     "atendimento":  ["persona.py", "bot.py"],

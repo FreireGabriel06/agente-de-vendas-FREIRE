@@ -32,6 +32,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from config import DATA_DIR
+from core import dinheiro
 from db import conectar, agora, registrar_evento
 
 ARQ_CHAVE = DATA_DIR / ".chave_lgpd"
@@ -282,6 +283,11 @@ def abrir_solicitacao(identificador: str, tipo: str, observacao: str = "") -> in
         return cur.lastrowid
 
 
+def _valor_do_pedido(linha) -> str | None:
+    valor = dinheiro.ler(linha["valor_bruto_dec"], linha["valor_bruto"])
+    return dinheiro.texto(valor) if valor is not None else None
+
+
 def exportar_dados(identificador: str) -> dict:
     """Atende pedido de acesso e portabilidade. Formato legível e estruturado."""
     # A comparação precisa decifrar cada registro. Em base grande, indexe pelo
@@ -296,7 +302,9 @@ def exportar_dados(identificador: str) -> dict:
         encontrados.append({
             "pedido": l["id_externo"],
             "marketplace": l["marketplace"],
-            "valor": l["valor_bruto"],
+            # Texto decimal e a moeda gravada (None = moeda não informada).
+            "valor": _valor_do_pedido(l),
+            "moeda": dinheiro.moeda_lida(l["valor_bruto_moeda"]),
             "estado": l["estado"],
             "nome": decifrar(l["comprador_nome"]),
             "endereco": _endereco(l["endereco_json"])[0],

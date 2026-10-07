@@ -23,15 +23,17 @@ import html
 import json
 import secrets
 import threading
+from decimal import Decimal
 from pathlib import Path
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
 from config import config
 from db import conectar, inicializar, registrar_evento
-from core import aprovacao, cofre, conformidade, privacidade, seguranca
+from core import aprovacao, cadastro, cofre, conformidade, privacidade, seguranca
 from core.estados import Estado, ESTADOS_CRITICOS, historico
 from inteligencia import precificacao, tendencias
 
@@ -85,6 +87,9 @@ def _pendencias_com_conformidade() -> list[dict]:
             "tipo": a.tipo,
             "resumo": a.resumo,
             "valor": a.valor,
+            # A moeda do valor, como a ordem a gravou; None é "moeda não
+            # informada" (fila de versão anterior, ou item sem dinheiro).
+            "moeda": a.payload.get("moeda"),
             "margem": a.payload.get("margem_prevista"),
             "marketplace": a.payload.get("marketplace", ""),
             "bloqueado": res.bloqueado,
@@ -115,8 +120,11 @@ def api_pendencias():
 
 @app.get("/api/pedidos")
 def api_pedidos(estado: str | None = None):
-    sql = ("SELECT id, marketplace, id_externo, valor_bruto, margem_prevista,"
-           " estado, codigo_rastreio, criado_em FROM pedidos")
+    """valor_bruto é o espelho REAL antigo; valor_bruto_dec e valor_bruto_moeda
+    são o valor decimal e a moeda que o marketplace informou (None: moeda não
+    informada)."""
+    sql = ("SELECT id, marketplace, id_externo, valor_bruto, valor_bruto_dec, valor_bruto_moeda,"
+           " margem_prevista, estado, codigo_rastreio, criado_em FROM pedidos")
     params = ()
     if estado:
         sql += " WHERE estado = ?"
@@ -248,6 +256,124 @@ async def api_ciclo():
     if "pulado" in resumo:
         raise HTTPException(409, resumo["pulado"])
     return resumo
+
+
+# ------------------------------------------------- Produtos e fornecedores
+#
+# Cadastro sem SQL à mão. A sessão e o CSRF são os do middleware acima, como
+# nas outras rotas; a validação é a de core/cadastro, a mesma do cli.py.
+# Não existe DELETE: desativar mantém pedidos, fila e histórico apontando
+# para o registro. Erro de campo: 422 com a lista "erros" em português;
+# SKU repetido: 409; id que não existe: 404.
+
+@app.exception_handler(cadastro.ErroValidacao)
+async def _erro_de_cadastro(request: Request, erro: cadastro.ErroValidacao):
+    return JSONResponse({"detail": "Dados inválidos: confira os campos.", "erros": erro.erros},
+                        status_code=422)
+
+
+@app.exception_handler(cadastro.Conflito)
+async def _conflito_de_cadastro(request: Request, erro: cadastro.Conflito):
+    return JSONResponse({"detail": str(erro),
+                         "erros": [{"campo": erro.campo, "mensagem": str(erro)}]},
+                        status_code=409)
+
+
+@app.exception_handler(cadastro.NaoEncontrado)
+async def _nao_encontrado(request: Request, erro: cadastro.NaoEncontrado):
+    return JSONResponse({"detail": str(erro)}, status_code=404)
+
+
+def _sem_nan(constante: str):
+    raise ValueError(f"{constante} não é número")
+
+
+async def _corpo_do_cadastro(request: Request):
+    """O JSON do corpo com os números decimais lidos direto em Decimal
+    (parse_float), sem passar por float. NaN e Infinity são recusados."""
+    try:
+        return json.loads(await request.body() or b"null",
+                          parse_float=Decimal, parse_constant=_sem_nan)
+    # ValueError: JSON quebrado e UTF-8 inválido; RecursionError: aninhamento
+    # sem fim; ArithmeticError: decimal.InvalidOperation, que não é ValueError,
+    # de um expoente que nem o Decimal representa (1e9999999999999999999).
+    except (ValueError, RecursionError, ArithmeticError):
+        raise cadastro.ErroValidacao([{"campo": "corpo",
+                                       "mensagem": "JSON inválido; envie um objeto JSON."}])
+
+
+async def _gravar(funcao, *args, request: Request):
+    """Lê o corpo e grava fora do laço de eventos: o SQLite pode esperar até
+    5 s por um banco ocupado, e isso não pode travar o painel."""
+    dados = await _corpo_do_cadastro(request)
+    return await run_in_threadpool(funcao, *args, dados, ator=request.state.operador)
+
+
+@app.get("/api/produtos")
+def api_produtos(ativo: str | None = None):
+    produtos = cadastro.listar_produtos(cadastro.filtro_ativo(ativo))
+    return {"produtos": produtos, "total": len(produtos)}
+
+
+@app.get("/api/produtos/{produto_id}")
+def api_produto(produto_id: str):
+    return cadastro.obter_produto(cadastro.id_do_texto(produto_id, "Produto"))
+
+
+@app.post("/api/produtos", status_code=201)
+async def api_criar_produto(request: Request):
+    return await _gravar(cadastro.criar_produto, request=request)
+
+
+@app.patch("/api/produtos/{produto_id}")
+async def api_editar_produto(produto_id: str, request: Request):
+    alvo = cadastro.id_do_texto(produto_id, "Produto")
+    return await _gravar(cadastro.editar_produto, alvo, request=request)
+
+
+@app.post("/api/produtos/{produto_id}/desativar")
+def api_desativar_produto(produto_id: str, request: Request):
+    return cadastro.desativar_produto(cadastro.id_do_texto(produto_id, "Produto"),
+                                      ator=request.state.operador)
+
+
+@app.get("/api/fornecedores")
+def api_fornecedores(ativo: str | None = None):
+    fornecedores = cadastro.listar_fornecedores(cadastro.filtro_ativo(ativo))
+    return {"fornecedores": fornecedores, "total": len(fornecedores)}
+
+
+@app.get("/api/fornecedores/{fornecedor_id}")
+def api_fornecedor(fornecedor_id: str):
+    return cadastro.obter_fornecedor(cadastro.id_do_texto(fornecedor_id, "Fornecedor"))
+
+
+@app.post("/api/fornecedores", status_code=201)
+async def api_criar_fornecedor(request: Request):
+    return await _gravar(cadastro.criar_fornecedor, request=request)
+
+
+@app.patch("/api/fornecedores/{fornecedor_id}")
+async def api_editar_fornecedor(fornecedor_id: str, request: Request):
+    alvo = cadastro.id_do_texto(fornecedor_id, "Fornecedor")
+    return await _gravar(cadastro.editar_fornecedor, alvo, request=request)
+
+
+@app.post("/api/fornecedores/{fornecedor_id}/desativar")
+def api_desativar_fornecedor(fornecedor_id: str, request: Request):
+    return cadastro.desativar_fornecedor(cadastro.id_do_texto(fornecedor_id, "Fornecedor"),
+                                         ator=request.state.operador)
+
+
+@app.post("/api/pedidos/{pedido_id}/reanalisar")
+async def api_reanalisar_pedido(pedido_id: str, request: Request):
+    """Pedido em PROBLEMA de volta a NOVO, depois de corrigido o cadastro
+    (worker.reanalisar, o mesmo do cli.py pedido reanalisar). Corpo opcional
+    {"moeda_venda": "BRL"}, só para pedido sem moeda. Pedido de que alguma
+    compra pode ter saído: 409."""
+    from worker import reanalisar
+    alvo = cadastro.id_do_texto(pedido_id, "Pedido")
+    return await _gravar(reanalisar, alvo, request=request)
 
 
 # ------------------------------------------------------------ Configuração

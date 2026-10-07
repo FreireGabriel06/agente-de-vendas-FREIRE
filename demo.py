@@ -3,25 +3,26 @@ import sys; sys.path.insert(0, '.')
 from config import config
 from db import inicializar, conectar, agora
 from core.estados import Estado, historico
-from core import aprovacao
+from core import aprovacao, dinheiro
 from worker import analisar_novos, montar_ordens_de_compra, EXECUTORES
 
 inicializar()
 with conectar() as c:
     c.execute("DELETE FROM transicoes"); c.execute("DELETE FROM aprovacoes")
     c.execute("DELETE FROM pedidos"); c.execute("DELETE FROM produtos"); c.execute("DELETE FROM fornecedores")
-    c.execute("INSERT INTO fornecedores (id,nome,canal,contato,prazo_dias) VALUES (1,'Fábrica Aurora','email','pedidos@fabrica-aurora.example',4)")
-    c.execute("INSERT INTO fornecedores (id,nome,canal,contato,prazo_dias) VALUES (2,'Metalpar','whatsapp','+55 00 00000-0000',12)")
+    c.execute("INSERT INTO fornecedores (id,nome,canal,contato,prazo_dias,pedido_minimo,pedido_minimo_dec,pedido_minimo_moeda,criado_em) VALUES (1,'Fábrica Aurora','email','pedidos@fabrica-aurora.example',4,0,'0.00','BRL',?)",(agora(),))
+    c.execute("INSERT INTO fornecedores (id,nome,canal,contato,prazo_dias,pedido_minimo,pedido_minimo_dec,pedido_minimo_moeda,criado_em) VALUES (2,'Metalpar','whatsapp','+55 00 00000-0000',12,0,'0.00','BRL',?)",(agora(),))
     # Produtos sintéticos já com a confirmação que a conformidade exige:
-    # nenhum deles é de categoria regulada.
-    c.execute("INSERT INTO produtos (id,sku,titulo,custo_fornecedor,peso_kg,fornecedor_id,categoria_regulada,criado_em) VALUES (1,'ORG-001','Organizador de gaveta 6 divisórias',18.50,0.4,1,'nenhuma',?)",(agora(),))
-    c.execute("INSERT INTO produtos (id,sku,titulo,custo_fornecedor,peso_kg,fornecedor_id,categoria_regulada,criado_em) VALUES (2,'LUM-114','Luminária de mesa articulada',62.00,1.2,1,'nenhuma',?)",(agora(),))
-    c.execute("INSERT INTO produtos (id,sku,titulo,custo_fornecedor,peso_kg,fornecedor_id,categoria_regulada,criado_em) VALUES (3,'SUP-300','Suporte de monitor em aço',95.00,3.0,2,'nenhuma',?)",(agora(),))
+    # nenhum deles é de categoria regulada. Valores com moeda explícita (BRL):
+    # sem ela, o worker não calcula margem.
+    c.execute("INSERT INTO produtos (id,sku,titulo,custo_fornecedor,custo_fornecedor_dec,custo_fornecedor_moeda,peso_kg,fornecedor_id,categoria_regulada,criado_em) VALUES (1,'ORG-001','Organizador de gaveta 6 divisórias',18.50,'18.50','BRL',0.4,1,'nenhuma',?)",(agora(),))
+    c.execute("INSERT INTO produtos (id,sku,titulo,custo_fornecedor,custo_fornecedor_dec,custo_fornecedor_moeda,peso_kg,fornecedor_id,categoria_regulada,criado_em) VALUES (2,'LUM-114','Luminária de mesa articulada',62.00,'62.00','BRL',1.2,1,'nenhuma',?)",(agora(),))
+    c.execute("INSERT INTO produtos (id,sku,titulo,custo_fornecedor,custo_fornecedor_dec,custo_fornecedor_moeda,peso_kg,fornecedor_id,categoria_regulada,criado_em) VALUES (3,'SUP-300','Suporte de monitor em aço',95.00,'95.00','BRL',3.0,2,'nenhuma',?)",(agora(),))
     # 4 pedidos: margem boa / margem ruim / venda maior (custo de R$ 62, abaixo
     # do teto: o rótulo compara o custo da compra) / fornecedor lento
-    for eid, pid, val in [('2000000001',1,54.90), ('2000000002',1,26.00), ('2000000003',2,289.00), ('2000000004',3,198.00)]:
-        c.execute("INSERT INTO pedidos (marketplace,id_externo,produto_id,quantidade,valor_bruto,estado,comprador_nome,endereco_json,criado_em,atualizado_em) VALUES ('mercadolivre',?,?,1,?,?,'Comprador Teste','{}',?,?)",
-                  (eid,pid,val,Estado.NOVO.value,agora(),agora()))
+    for eid, pid, val in [('2000000001',1,'54.90'), ('2000000002',1,'26.00'), ('2000000003',2,'289.00'), ('2000000004',3,'198.00')]:
+        c.execute("INSERT INTO pedidos (marketplace,id_externo,produto_id,quantidade,valor_bruto,valor_bruto_dec,valor_bruto_moeda,estado,comprador_nome,endereco_json,criado_em,atualizado_em) VALUES ('mercadolivre',?,?,1,CAST(? AS REAL),?,'BRL',?,'Comprador Teste','{}',?,?)",
+                  (eid,pid,val,val,Estado.NOVO.value,agora(),agora()))
 
 if config.modo_simulacao:
     print("Modo simulação ligado (MODO_SIMULACAO=true): a ordem aprovada sai marcada como "
@@ -30,9 +31,12 @@ if config.modo_simulacao:
 print("=== 1. ANÁLISE DE MARGEM ===")
 print(f"  {analisar_novos()} pedido(s) aprovados na margem\n")
 with conectar() as c:
-    for p in c.execute("SELECT id_externo,valor_bruto,margem_prevista,estado FROM pedidos ORDER BY id"):
+    for p in c.execute("SELECT id_externo,valor_bruto,valor_bruto_dec,valor_bruto_moeda,margem_prevista,estado FROM pedidos ORDER BY id"):
         m = f"{p['margem_prevista']}%" if p['margem_prevista'] is not None else "—"
-        print(f"  {p['id_externo']}  R$ {p['valor_bruto']:>7.2f}  margem {m:>8}  →  {p['estado']}")
+        # O valor em Decimal, com a moeda gravada (dinheiro.formatar: "R$ 54.90").
+        venda = dinheiro.formatar(dinheiro.ler(p['valor_bruto_dec'], p['valor_bruto']),
+                                  dinheiro.moeda_lida(p['valor_bruto_moeda']))
+        print(f"  {p['id_externo']}  {venda:>10}  margem {m:>8}  →  {p['estado']}")
 
 print("\n=== 2. MONTAGEM DAS ORDENS DE COMPRA ===")
 print(f"  {montar_ordens_de_compra()} ordem(ns) na fila\n")

@@ -26,8 +26,12 @@ The code targets Brazilian marketplaces today, Mercado Livre first. The
 
 Each worker cycle (every 5 minutes by default, `INTERVALO_WORKER`):
 
-1. imports paid **Mercado Livre** orders and encrypts buyer data on arrival;
-2. estimates the net margin and refuses orders below the configured minimum;
+1. imports paid **Mercado Livre** orders, with the currency Mercado Livre
+   reports, and encrypts buyer data on arrival;
+2. estimates the net margin and refuses orders below the configured minimum.
+   The margin is computed only when the product cost and the sale are in the
+   same currency, and that currency is BRL (the fee model's currency); any other
+   case moves the order to `PROBLEMA` with the reason. Nothing is converted;
 3. builds a purchase order for each viable order and runs the compliance
    rules. An order that breaks a rule moves to `PROBLEMA` with the reason. An
    order the rules cannot judge because data is missing (for example, whether
@@ -73,7 +77,7 @@ What the automated suite covers, and how to run it, is under [Tests](#tests).
 | Area | Code | Status |
 |---|---|---|
 | Order state machine: validated transitions, history table | `core/estados.py` | Tested through the demo flow and one refused transition |
-| Margin estimate with the Mercado Livre fee model: average commission (13% classic, 17% premium), reference unit-cost and shipping curves, R$ 79 threshold | `inteligencia/precificacao.py` | Verified locally — an estimate, not the real fee of each category |
+| Margin estimate with the Mercado Livre fee model: average commission (13% classic, 17% premium), reference unit-cost and shipping curves, R$ 79 threshold; computed in `Decimal`, rounded to the cent | `inteligencia/precificacao.py` | Verified locally — an estimate, not the real fee of each category; refusing a margin across currencies is tested |
 | Approval queue: purchases, buyer replies, price changes, listings | `core/aprovacao.py` | Tested for purchase orders, buyer replies and price changes (marketplace calls faked) |
 | Compliance rules that fail closed: the same check before a purchase order is queued, in the panel queue and at approval from the panel (HTTP 409) or `cli.py aprovar`, with the same reason; missing data blocks the item as "needs confirmation" with the way out | `core/conformidade.py`, `core/aprovacao.py`, `painel/app.py`, `cli.py` | Tested with synthetic Mercado Livre and Amazon orders |
 | Purchase order after approval | `worker.py` | Writes a text file to `ordens_de_compra/` in the data folder; nothing is sent to the supplier, in either mode |
@@ -81,14 +85,16 @@ What the automated suite covers, and how to run it, is under [Tests](#tests).
 | Buyer data encrypted on arrival (Fernet), masked in API responses, reveal endpoint logs each read; plaintext (demo) or unreadable fields come back as a clean result with a notice, and so does an order whose buyer data is entirely empty or purged | `core/privacidade.py`, `painel/app.py` | Tested |
 | Retention purge; data-subject export and deletion | `core/privacidade.py` | Tested; only the purge has a panel button |
 | Web panel: queue with keyboard shortcuts (`j`/`k`, `a`, `r`, `c`), orders, niche research, pricing, LGPD log, events, connection setup | `painel/` | Verified locally (page and API functions, not in a browser) |
-| CLI | `cli.py` | `aprovar` and `pendencias` tested; `preco` verified locally |
+| CLI | `cli.py` | `aprovar`, `pendencias`, `produto`, `fornecedor` and `pedido reanalisar` tested; `preco` verified locally |
 | Mercado Livre: OAuth with PKCE, orders, questions, shipments, price update | `conectores/mercadolivre.py` | Not validated |
 | Buyer replies drafted with the Claude API through the official `anthropic` SDK, with a fixed FAQ and escalation triggers; each question is sent to the model once; refusals, truncated drafts and API errors escalate to a person; the connection test uses `models.retrieve` (no tokens) — see [Claude API](#claude-api) | `atendimento/`, `painel/configurar.py` | Tested with a fake client and with the real SDK over a mock transport; not validated against the live API; needs `ANTHROPIC_API_KEY` |
 | Shipment tracking for confirmed and in-transit orders, reading the encrypted shipping reference through `core/privacidade.py` (first read per order logged) | `worker.py`, `core/privacidade.py` | Tested with a fake Mercado Livre client |
 | Niche research: Google Trends and Mercado Livre search | `inteligencia/tendencias.py` | Not validated |
 | Shopee: partner authorization with HMAC-signed calls, order listing | `conectores/shopee.py` | Not validated; used only by connection setup and test, not by the worker |
 | Amazon SP-API with Login with Amazon: order listing | `conectores/amazon.py` | Not validated; used only by the connection test, not by the worker |
-| Product and supplier registration | — | Planned — manual SQL today |
+| Product and supplier registration without SQL: list, read, create, edit and deactivate (no delete) through the panel API and `cli.py produto` / `cli.py fornecedor`, one validation for both (pydantic): field errors in Portuguese (HTTP 422), duplicate SKU 409, unknown fields refused; the compliance confirmations are editable there — see [Products and suppliers](#products-and-suppliers) | `core/cadastro.py`, `painel/app.py`, `cli.py` | Tested; no panel screen yet |
+| Money as `Decimal` with an explicit ISO 4217 currency for the product cost, the supplier minimum order and the order sale and cost amounts: canonical decimal text plus a currency column next to their old `REAL` columns, old databases migrated with the currency left empty ("moeda não informada"); dates written in UTC with the offset | `core/dinheiro.py`, `db.py`, `worker.py` | Tested |
+| Orders stuck in `PROBLEMA` after a data fix (product cost or currency, weight, supplier, deactivated product, missing sale currency) go back to analysis with `cli.py pedido reanalisar` or `POST /api/pedidos/{id}/reanalisar`, only when no purchase order can have gone out | `worker.py`, `cli.py`, `painel/app.py` | Tested |
 | Panel login: one operator, server-side session, CSRF token in a header | `core/seguranca.py`, `painel/app.py` | Tested |
 | OAuth return: `state` created by the same panel session, single use, valid for 10 minutes; return pages escape their output and show fixed error messages | `core/seguranca.py`, `painel/app.py`, `painel/configurar.py` | Tested with a fake token endpoint |
 | Data folder for `.env`, database, keys, legacy token files and purchase orders: `AGENTE_DADOS`, the executable's folder, or the project folder | `config.py` | Tested |
@@ -153,22 +159,215 @@ Before you rely on it:
   back to the queue after you turn simulation off. To operate for real, set
   `MODO_SIMULACAO=false` in `.env` and restart. Only an explicit "no" (`false`,
   `0`, `no`, `off`, `nao`) turns it off; an empty or mistyped value keeps it on.
-- Margins need the product in the database, and purchase orders need its
-  supplier. Today that means SQL on the `produtos` and `fornecedores` tables
-  (schema in `db.py`).
+- Margins need the product, with its cost **and the cost's currency**, and
+  purchase orders need its supplier. Register both through the panel API or
+  the CLI — see [Products and suppliers](#products-and-suppliers). A product
+  saved before this version keeps its cost but has no currency, so its
+  margin is refused until you set one:
+  `python cli.py produto editar SKU --custo 18.50 --moeda BRL`. Do this
+  before the worker runs: an order it already sent to `PROBLEMA` is not
+  analysed again on its own — see
+  [Upgrading an existing database](#upgrading-an-existing-database).
 - **Purchases stay blocked until you give the confirmations compliance asks
   for:** `EMITE_NOTA_FISCAL=true` (or `false`) in `.env`, then a restart; per
   product, `categoria_regulada` (`nenhuma` or one of the listed categories),
   `habilitacao_confirmada` for a regulated category and
   `reembalagem_confirmada` for Amazon orders; also for Amazon orders, the
-  supplier's `canal` in `fornecedores` must be `email` or `whatsapp` (`api`
-  or `portal` means the supplier ships directly, which is refused). Each
-  blocked item says what is
-  missing and how to provide it (for a product field, the SQL to run); an
-  item already in the queue is released as soon as the data is filled in.
-  The product confirmations take `1` (yes) or `0` (no); `true`/`false`,
-  `sim`/`não` and the other words `.env` accepts also work. Anything else,
-  including an empty string, counts as not confirmed yet.
+  supplier's `canal` must be `email` or `whatsapp` (`api` or `portal` means
+  the supplier ships directly, which is refused). The product and supplier
+  fields are set through the API or the CLI (for example
+  `python cli.py produto editar SKU --categoria-regulada nenhuma`). Each
+  blocked item says what is missing and the command or request that
+  provides it; an item already in the queue is released as soon as the data
+  is filled in. The API takes `true`, `false` or `null` for the product
+  confirmations; values typed into an older database by hand are still read
+  (`1`/`0`, `true`/`false`, `sim`/`não` and the other words `.env` accepts),
+  and anything else, including an empty string, counts as not confirmed yet.
+
+---
+
+## Products and suppliers
+
+Products and suppliers are created and edited through the panel API or the
+CLI; both call the same validation in `core/cadastro.py`, so they accept and
+refuse the same input with the same field messages. There is no panel screen
+for them yet.
+
+| Method and path | What it does |
+|---|---|
+| `GET /api/produtos`, `GET /api/fornecedores` | List; `?ativo=true` or `?ativo=false` filters |
+| `GET /api/produtos/{id}`, `GET /api/fornecedores/{id}` | Read one |
+| `POST /api/produtos`, `POST /api/fornecedores` | Create (201) |
+| `PATCH /api/produtos/{id}`, `PATCH /api/fornecedores/{id}` | Edit: only the fields sent change; `null` clears an optional field; `"ativo": true` reactivates |
+| `POST /api/produtos/{id}/desativar`, `POST /api/fornecedores/{id}/desativar` | Deactivate |
+| `POST /api/pedidos/{id}/reanalisar` | Send an order in `PROBLEMA` back to analysis; optional body `{"moeda_venda": "BRL"}` — see [Upgrading an existing database](#upgrading-an-existing-database) |
+
+Every route needs the panel session, and the writes also need the
+`X-CSRF-Token` header, like the other panel calls: no session is 401, a
+missing or wrong token is 403. The login response, and `GET /api/sessao`,
+return the token. An example with `curl` against a local panel. The
+password is typed at a hidden prompt and reaches `curl` on standard input,
+JSON-escaped, so it is not in the command line, the shell history or the
+process list. The session cookie goes to a temporary file outside the
+repository, removed at the end:
+
+```bash
+JAR=$(mktemp)
+python -c 'import getpass, json; print(json.dumps({"usuario": "your_user", "senha": getpass.getpass("Password: ")}))' \
+  | curl -s -c "$JAR" -H 'Content-Type: application/json' --data @- http://127.0.0.1:8777/api/login
+CSRF=$(curl -s -b "$JAR" http://127.0.0.1:8777/api/sessao | python -c 'import json,sys; print(json.load(sys.stdin)["csrf"])')
+
+curl -s -b "$JAR" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
+  -d '{"nome": "Example Supplier", "canal": "email", "contato": "orders@supplier.example",
+       "prazo_dias": 4, "pedido_minimo": {"valor": "100.00", "moeda": "BRL"}}' \
+  http://127.0.0.1:8777/api/fornecedores
+
+curl -s -b "$JAR" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
+  -d '{"sku": "ORG-001", "titulo": "Drawer organizer", "peso_kg": "0.4", "fornecedor_id": 1,
+       "custo_fornecedor": {"valor": "18.50", "moeda": "BRL"}, "categoria_regulada": "nenhuma"}' \
+  http://127.0.0.1:8777/api/produtos
+
+curl -s -b "$JAR" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
+  -X PATCH -d '{"reembalagem_confirmada": true}' http://127.0.0.1:8777/api/produtos/1
+
+curl -s -b "$JAR" -H "X-CSRF-Token: $CSRF" -X POST http://127.0.0.1:8777/api/fornecedores/1/desativar
+
+rm -f "$JAR"
+```
+
+The same with the CLI, which needs no session because it runs on the
+machine that holds the database:
+
+```bash
+python cli.py fornecedor criar --nome "Example Supplier" --canal email --contato orders@supplier.example --prazo 4
+python cli.py produto criar --sku ORG-001 --titulo "Drawer organizer" --custo 18.50 --moeda BRL --peso 0.4 --fornecedor 1
+python cli.py produto editar ORG-001 --categoria-regulada nenhuma --reembalagem sim
+python cli.py fornecedor desativar 1
+python cli.py produto listar --ativo true
+python cli.py pedido reanalisar 12
+```
+
+**Fields and rules.** Product: `sku` (trimmed, 1–64 characters, unique and
+case-sensitive, like the worker's exact match on the marketplace SKU),
+`titulo` (up to 200), `custo_fornecedor` (money, greater than zero),
+`peso_kg` (greater than 0, up to 1000, at most 3 decimal places), optional
+`categoria_ml`, `fornecedor_id` (must exist and be active),
+`categoria_regulada` (`nenhuma` or one of the categories in
+`core/conformidade.py`), `habilitacao_confirmada` and
+`reembalagem_confirmada` (`true`, `false` or `null` only). Supplier: `nome`
+(up to 120), `canal` (`email`, `whatsapp`, `api` or `portal`), `contato`
+(up to 200), `prazo_dias` (integer from 1 to 365), optional `pedido_minimo`
+(money, zero or more) and `observacoes` (up to 1000). Text fields are
+trimmed first (leading and trailing whitespace, including U+0085 and the
+line separator, is removed); a control character left inside the text is
+refused: C0 and C1 controls such as U+0085, invisible formatting such as
+the bidirectional marks (U+202E), and the line and paragraph separators
+(`observacoes` accepts line breaks and tabs). A field the model does not
+know is refused instead of ignored. A refused request answers HTTP 422 with
+every problem at once; for example, a supplier sent with `"prazo_dias": 0`
+and `"pedido_minimo": {"valor": "100.00"}`:
+
+```json
+{"detail": "Dados inválidos: confira os campos.",
+ "erros": [{"campo": "prazo_dias", "mensagem": "use um número inteiro de 1 a 365."},
+           {"campo": "pedido_minimo.moeda",
+            "mensagem": "obrigatória: todo valor leva a moeda (código ISO 4217), por exemplo BRL ou USD."}]}
+```
+
+A duplicate SKU answers 409 and an unknown id 404. The CLI prints the same
+field messages, under the header `Dados inválidos:`, and exits with code 1;
+it finds a product by SKU, so an unknown one is reported by its SKU.
+
+**Money.** An amount is always an object with a value and a currency:
+`{"valor": "18.50", "moeda": "BRL"}`. Send the value as a string; a JSON
+number is also accepted and is read straight into `Decimal`, never through
+a binary float. At most 4 decimal places, below 1,000,000,000; a comma as
+decimal separator is refused. Responses return values as strings. The
+currency is a 3-letter uppercase ISO 4217 code from `MOEDAS_ACEITAS` in
+`core/dinheiro.py`: `BRL`, `USD`, `EUR`, `GBP`, `MXN` and `CAD`. To accept
+another one, add its code to that set; nothing else changes, but the margin
+is still computed only in BRL until a fee model exists for that currency.
+
+**Deactivate, don't delete.** There is no delete route. A deactivated
+product or supplier stays in the database, so orders, the approval queue
+and history keep pointing at it. A deactivated supplier cannot be linked to
+a product, and compliance blocks purchases from it (`FORNECEDOR-DESATIVADO`):
+the worker sends a new order to `PROBLEMA`, and a purchase already in the
+queue cannot be approved until you reactivate the supplier or link another
+one to the product. Deactivating a supplier that active products still use
+answers with a warning saying how many. A deactivated product is not
+purchased either (`PRODUTO-DESATIVADO`): its marketplace orders are still
+imported and analysed, because the sale exists, but the worker sends them
+to `PROBLEMA` instead of queueing a purchase, and a purchase already in the
+queue cannot be approved until you reactivate the product
+(`python cli.py produto editar SKU --reativar`). After reactivating, an
+order already in `PROBLEMA` comes back with `python cli.py pedido
+reanalisar ID`.
+
+**Changing a product's supplier or cost.** A purchase order in the queue
+records the supplier it was built for (by id) and the amount and currency
+of the product cost at that time, which its margin was computed with.
+Editing that same supplier's name, channel or contact needs no rebuild: the
+approved order file and the "send it through channel X" instruction take
+them from the supplier record at approval time. If the product is linked to another supplier afterwards,
+approving that order would send the purchase to the old one
+(`FORNECEDOR-TROCADO`); if the product cost or its currency changed, it
+would pay the old amount with the old margin (`CUSTO-ALTERADO`). Compliance
+blocks both. On its next cycle the worker refuses that item and builds the
+order again from the product's current data: the margin is computed again
+with the current cost, under the same currency rule as a new order, and the
+new order goes through the same checks. If the margin no longer reaches the
+minimum, or the cost is in another currency, the order goes to `PROBLEMA`
+with the reason and nothing is queued; the refused item says which of the
+two happened. Queue items written by an earlier version do not record the
+supplier id or the currency: they are blocked the same way and rebuilt on
+the next cycle.
+
+**Upgrading an existing database.** On start, `db.py` adds the new columns.
+The product cost (`produtos.custo_fornecedor`), the supplier minimum order
+(`fornecedores.pedido_minimo`) and the order sale and cost amounts
+(`pedidos.valor_bruto`, `pedidos.custo_previsto`) each get a decimal text
+column (`<name>_dec`) and a currency column (`<name>_moeda`) next to the
+old `REAL` column; other amount columns are unchanged (see
+[Known limitations](#known-limitations)). The value is copied from the
+`REAL` column where there is one; the currency stays empty, shown as "moeda
+não informada", because the old database never recorded it — nothing
+assumes BRL or USD. The `REAL` columns keep being written, so older code and
+queries still read them. If you change a `REAL` amount by hand in SQL to a
+value that no longer matches the decimal, a trigger clears the decimal and
+the currency of that row, so the stale decimal is never used; set the
+amount again through the API or the CLI. Order amounts come
+with the currency Mercado Livre reports; an order without it is not given
+one. Dates are written in UTC as ISO 8601 with the offset
+(`2026-10-02T14:05:09+00:00`).
+
+Set the currency of every existing product (`python cli.py produto editar
+SKU --custo 18.50 --moeda BRL`) before the worker runs. The worker only
+analyses orders in `NOVO`: an order it already sent to `PROBLEMA` (missing
+product currency, unreadable weight, no supplier, a deactivated product or
+supplier, a margin that no longer closes) stays there after you fix the
+data. When the margin could not be computed, the reason says what to fix
+and ends with the command below; for the other reasons, fix the data, then
+send the order back to analysis:
+
+```bash
+python cli.py pedido reanalisar 12                    # back to NOVO; the next cycle analyses it again
+python cli.py pedido reanalisar 12 --moeda-venda BRL  # also records the sale currency the marketplace did not report
+```
+
+The panel API does the same with `POST /api/pedidos/{id}/reanalisar` (session
+and CSRF token, like the other writes), with an optional body
+`{"moeda_venda": "BRL"}`. Orders saved before this version have no sale
+currency, so their margin is refused until you state it this way; the
+currency is never assumed, it is accepted only for an order that has none,
+and an `atencao` event records who stated it. Re-analysis is refused (409)
+for an order that is not in `PROBLEMA`, that has a purchase still in the
+queue, or from which a purchase order may have gone out (it reached
+`COMPRA_ENVIADA`, or an approval of its purchase is executing, failed or
+was executed outside simulation): sending it back could buy twice. An
+unknown order answers 404 and an invalid currency 422. There is no other
+way to change an order's currency. An order whose SKU was not registered
+when it arrived has no product linked, and re-analysis does not link one.
 
 ---
 
@@ -219,8 +418,66 @@ What it covers:
   types are blocked; old databases get the new product columns; a typed
   "no" (`'nao'`, `'false'`...) in a confirmation column blocks, and an empty
   or unknown value asks for the confirmation; an unknown supplier channel, a
-  product without a supplier, a supplier lead time typed as text (`'6 dias'`)
-  and a listing without category or warranty ask for confirmation.
+  supplier lead time typed as text (`'6 dias'`) and a listing without
+  category or warranty ask for confirmation; a product that lost its
+  supplier after the purchase was queued blocks it.
+- **Products and suppliers:** every new route answers 401 without a session
+  and 403 without a valid CSRF token, writing nothing; no delete route; each
+  validation rule with a passing and a refused case (SKU trimmed, empty, too
+  long and duplicated — 409 on create and on edit — and case-sensitive like
+  the worker's lookup; title and contact
+  length; channel set; lead time range and type; weight above zero; supplier
+  that exists and is active; confirmations strictly `true`/`false`/`null`;
+  length limits of every text field; C0 and C1 controls, bidirectional
+  marks and line separators; negative minimum order; a supplier id beyond
+  SQLite's integer); unknown fields on all four write routes and inside
+  both amounts, including a key that looks like SQL, with nothing written;
+  malformed, non-object or deeply nested JSON; every message in Portuguese
+  without a traceback; the CLI and the API refusing the same input with the
+  same messages through the same function, on create and on edit; duplicate
+  SKU and unknown ids in the CLI without a traceback; a duplicate SKU that
+  slips past the check answered 409 by the unique index; copy-paste
+  commands never embedding a SKU the shell would interpret.
+  Money: JSON numbers read as `Decimal` (`0.1` + `0.2` is exactly `0.3`),
+  more decimal places than allowed refused rather than rounded, huge
+  exponents refused without an HTTP 500 (also beyond what `Decimal` can
+  hold), `NaN` and infinity refused as text and as `Decimal`, a Python
+  float refused, the currency required and checked
+  against the allowlist, canonical text plus currency plus the `REAL`
+  mirror on disk, an old database migrated with values copied and the
+  currency left empty, the trigger for hand-edited `REAL` values, the
+  margin refused for different, unknown or non-BRL currencies and computed
+  in `Decimal` otherwise (the worker passes `Decimal` to the margin), the
+  Mercado Livre currency stored as reported, an order or queue item from an
+  earlier version never labeled as BRL; an unreadable product weight sends
+  only that order to `PROBLEMA` instead of stopping the analysis of every
+  new order; `nan`, `inf` and `1e999` in the margin, ceiling and tax
+  settings fall back to the default with a warning, and a ceiling that
+  still cannot be read labels the item `ACIMA DO TETO` instead of failing
+  the cycle.
+  Deactivation keeps foreign keys and orders valid; a deactivated supplier
+  sends a new order to `PROBLEMA` and blocks a purchase already in the
+  queue until it is reactivated; a purchase queued for a supplier the
+  product no longer uses is refused at approval and rebuilt by the worker
+  for the current one, never written out for the old one; the rebuilt order
+  takes the new supplier's cost and a margin computed again, and a cost that
+  turns the margin negative or comes in another currency sends the order to
+  `PROBLEMA` instead, with the refused item saying so; a cost edited while
+  the purchase waits in the queue blocks it (`CUSTO-ALTERADO`) and the
+  worker rebuilds it with the current cost, also for an analysed order and
+  for a purchase coming back after a simulated approval; a deactivated
+  product is not purchased; an edited SKU
+  does not move the check to another product; queue items without the
+  supplier id fail closed and are rebuilt; an order stuck in `PROBLEMA` for a
+  missing currency goes back to analysis with `pedido reanalisar` (CLI and
+  API, behind the session and the CSRF token), the sale currency the
+  marketplace did not report is recorded only when stated, with an event,
+  and re-analysis is refused for an order with a purchase queued or possibly
+  sent;
+  a confirmation set through the API releases a blocked queue item; the
+  orders and queue API return each amount's currency; dates
+  carry the UTC offset; the demo still produces the same result, with every
+  amount in BRL.
 - **Simulation mode:** on by default and off only with an explicit "no";
   approved replies and price changes never reach the marketplace while it is
   on, and do when it is off (fake connector); the purchase order file and
@@ -485,7 +742,7 @@ Reply drafts use the official `anthropic` Python SDK
 | `MODELO_CLAUDE` | `claude-opus-5-5` | Claude model for reply drafts ($4 / $20 per million input / output tokens); `claude-sonnet-5-5` costs $2 / $10. Your decision; the program never changes it (a refused request may be answered, and billed, by Anthropic's fallback model) |
 | `ESFORCO_CLAUDE` | `low` | Effort for reply drafts: `low`, `medium`, `high`, `xhigh` or `max`; it also sets `max_tokens` and the timeout; an unknown value falls back to `low` with a warning |
 | `CHAVE_COFRE` | not set | [Credential vault](#credential-vault) key; read only from the real environment, never from `.env`; when not set, `.chave_cofre` is used |
-| `MARGEM_MINIMA_PCT` | `18` | Minimum net margin (%) |
+| `MARGEM_MINIMA_PCT` | `18` | Minimum net margin (%). For this and the next two settings, a number that is not finite or is absurdly large (`nan`, `inf`, `1e999`) is ignored with a warning and the default applies |
 | `TETO_COMPRA_AUTOMATICA` | `300` | Only a label: purchases up to this value show as `ROTINA`, above it as `ACIMA DO TETO`. Nothing is bought automatically; every purchase needs approval (the name is historical) |
 | `ALIQUOTA_IMPOSTO_PCT` | `4` | Estimated tax on sales (%) |
 | `PRAZO_FORNECEDOR_DIAS` | `5` | Default supplier lead time (days) |
@@ -544,7 +801,9 @@ the panel). A rule that applies and lacks its data blocks the item as "needs
 confirmation", naming the missing fact and where to fill it in; no default
 stands in for a confirmation. Product and supplier facts are read from the
 database at check time, so a confirmation filled in later releases an item
-that is already waiting. A purchase that breaks a rule, such as Amazon's
+that is already waiting. A queued purchase records the product and supplier
+ids; the check finds the product by id, never by the editable SKU, and
+reads the supplier the order is addressed to. A purchase that breaks a rule, such as Amazon's
 dropshipping policy, goes to `PROBLEMA` and never reaches the queue. Limits:
 buyer replies are checked only by a detection rule that nothing sets yet —
 each reply is read by a person before approval, and questions about returns
@@ -555,8 +814,9 @@ marketplaces.
 what it would do and returns a result that starts with `[SIMULAÇÃO]`, stored
 with the approval. A simulated purchase or reply approval does not consume
 the item: a simulated purchase leaves the order in `AGUARDANDO_APROVACAO`,
-and once simulation is off the worker queues that purchase again and puts
-the same reply text back in the queue. A simulated price change is only
+and once simulation is off the worker queues that purchase again, with the
+margin computed again from the product's current cost, and puts the same
+reply text back in the queue. A simulated price change is only
 recorded and is not queued again. Ingestion and drafting run in both modes, so
 with Mercado Livre connected the queue holds real orders and questions. Only
 an explicit "no" turns simulation off, so a typo stays on the safe side.
@@ -585,7 +845,10 @@ Sheet and the cryptography and secret-management chapters of OWASP ASVS 5.0.
 - No integration has been validated with a live seller account.
 - Purchase orders are text files, with or without simulation mode; nothing reaches suppliers.
 - Margins rely on average fees; confirm the real fees of each category.
-- Compliance confirmations are set with SQL on `produtos` (`categoria_regulada`, `habilitacao_confirmada`, `reembalagem_confirmada`), on `fornecedores` for Amazon orders (`canal` must be `email` or `whatsapp`; `api` or `portal` means direct shipping and is refused) and with `EMITE_NOTA_FISCAL` in `.env`, which needs a restart; the panel has no form for them yet.
+- Products, suppliers and their compliance confirmations are edited through the API or the CLI; the panel has no screen for them yet. `EMITE_NOTA_FISCAL` still lives in `.env` and needs a restart.
+- The margin is computed only in BRL, the currency of the Mercado Livre fee model; there is no currency conversion. A product or order without a recorded currency — anything saved before this version — gets no margin until the currency is set: the product's with `cli.py produto editar`, the order's with `cli.py pedido reanalisar ID --moeda-venda` (see [Upgrading an existing database](#upgrading-an-existing-database)).
+- The panel screen (`painel.html`) and `cli.py pendencias` still format every amount as R$: an order or queue item in another currency, or with no recorded currency, shows as R$ there. The API returns the currency next to the amount (`valor_bruto_dec` and `valor_bruto_moeda` in `/api/pedidos`, `moeda` in each `/api/pendencias` item; `null` means "moeda não informada"), but the screen does not show it yet.
+- Only the Mercado Livre connector records the order currency; the Shopee and Amazon connectors do not, and the worker does not use them yet. Other amount columns are still plain `REAL` without a currency: `anuncios.preco_venda`, `oportunidades.preco_mediano`, and `aprovacoes.valor`, where the worker writes the cost of each purchase it queues for the panel's exposure total (a BRL amount, since a purchase is built only after a BRL margin, or an amount without a recorded currency for an order analysed before this version).
 - Reply drafting has not been run against the live Claude API; it is tested with a fake client and with the real SDK over a mock transport.
 - The vault key sits on the same machine as the database (environment variable or `.chave_cofre`): it protects copies of the database, not a compromised computer. On Windows `.chave_cofre` inherits the folder's permissions.
 - A renewed refresh token that could not be saved lives only in the running process until a later save succeeds; restarting in that window means authorizing the account again. A warning event appears when this happens.
@@ -606,7 +869,8 @@ db.py                    SQLite schema and connection
 demo.py                  synthetic demo data (wipes existing data)
 core/                    estados (state machine), aprovacao (queue),
                          conformidade (rules), privacidade (LGPD),
-                         seguranca (login), cofre (credential vault)
+                         seguranca (login), cofre (credential vault),
+                         cadastro (products and suppliers), dinheiro (Decimal and currency)
 conectores/              mercadolivre, shopee, amazon
 inteligencia/            precificacao (margin), tendencias (niche research)
 atendimento/             persona, reply bot and Claude API client (official SDK)
@@ -632,10 +896,10 @@ Planned, in this order. None of it exists yet.
 2. **Panel login**, then one end-to-end integration: seller consent,
    authenticated reads, storage, re-runs without duplicates and failure
    handling.
-3. **Pilot MVP:** products and suppliers through the API; paginated,
-   incremental sync of listings, stock and orders; alerts for stale data,
-   expired connections and low stock; price and stock updates with dry run,
-   limits and an audit log.
+3. **Pilot MVP:** a panel screen for products and suppliers (the API and the
+   CLI exist); paginated, incremental sync of listings, stock and orders;
+   alerts for stale data, expired connections and low stock; price and stock
+   updates with dry run, limits and an audit log.
 4. **Operations:** one isolated instance per client, backups with restore
    tests, health monitoring; interface screens after the backend is stable.
 
@@ -646,7 +910,7 @@ is a candidate after the first pilot.
 
 ## Tech stack
 
-Python · FastAPI and Uvicorn · SQLite · cryptography (Fernet, MultiFernet) · requests ·
+Python · FastAPI and Uvicorn · pydantic (input validation) · SQLite · cryptography (Fernet, MultiFernet) · requests ·
 pytrends and pandas (niche research) · Claude API through the official
 `anthropic` SDK (optional, reply drafting) ·
 plain HTML, CSS and JavaScript for the panel

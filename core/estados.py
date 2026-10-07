@@ -33,8 +33,10 @@ TRANSICOES = {
     Estado.ENTREGUE: set(),
     Estado.RECUSADO_MARGEM: {Estado.ANALISADO},   # você pode forçar reanálise
     Estado.CANCELADO: set(),
-    Estado.PROBLEMA: {Estado.ANALISADO, Estado.COMPRA_ENVIADA, Estado.EM_TRANSITO,
-                      Estado.CANCELADO, Estado.ENTREGUE},  # saída manual
+    # Saída manual. PROBLEMA -> NOVO é a reanálise (worker.reanalisar, pelo
+    # cli.py ou pelo painel): só para pedido do qual nenhuma compra saiu.
+    Estado.PROBLEMA: {Estado.NOVO, Estado.ANALISADO, Estado.COMPRA_ENVIADA, Estado.EM_TRANSITO,
+                      Estado.CANCELADO, Estado.ENTREGUE},
 }
 
 # Estados que exigem atenção humana — alimentam o painel de pendências.

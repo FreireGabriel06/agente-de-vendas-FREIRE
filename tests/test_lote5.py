@@ -30,7 +30,7 @@ from cryptography.fernet import Fernet
 import config
 import worker
 from apoio import AnthropicFalso, USUARIO, cabecalho, resposta_claude
-from core import aprovacao, cofre, conformidade, privacidade
+from core import aprovacao, cofre, conformidade, dinheiro, privacidade
 from core.estados import ESTADOS_CRITICOS, Estado, historico
 from db import agora, conectar
 
@@ -53,7 +53,7 @@ def acessos() -> list[tuple]:
 
 def inserir_pedido(**colunas) -> int:
     dados = {"marketplace": "mercadolivre", "id_externo": "5000000001", "quantidade": 1,
-             "valor_bruto": 50.0, "estado": Estado.NOVO.value,
+             "valor_bruto": 50.0, "valor_bruto_moeda": "BRL", "estado": Estado.NOVO.value,
              "criado_em": agora(), "atualizado_em": agora()}
     dados.update(colunas)
     with conectar() as conn:
@@ -69,18 +69,33 @@ def cadastrar(sku="ORG-001", canal="email", prazo=4, **produto):
                                " VALUES ('Fornecedor Teste', ?, 'pedidos@fornecedor.example', ?)",
                                (canal, prazo)).lastrowid
         colunas = {"sku": sku, "titulo": "Organizador", "custo_fornecedor": 18.5,
+                   "custo_fornecedor_moeda": "BRL",
                    "peso_kg": 0.4, "fornecedor_id": fornecedor, "criado_em": agora(), **produto}
         return c.execute(f"INSERT INTO produtos ({', '.join(colunas)}) VALUES "
                          f"({', '.join('?' * len(colunas))})", tuple(colunas.values())).lastrowid
+
+
+def campos_do_produto(sku="ORG-001") -> dict:
+    """Os campos do produto que o worker grava no payload da compra: os ids
+    (a conformidade acha produto e fornecedor por eles) e o valor, a moeda e
+    a quantidade, que ela confere com o custo atual (CUSTO-ALTERADO)."""
+    with conectar() as c:
+        linha = c.execute("SELECT id, fornecedor_id, custo_fornecedor, custo_fornecedor_dec,"
+                          " custo_fornecedor_moeda FROM produtos WHERE sku = ?", (sku,)).fetchone()
+    if not linha:
+        return {}
+    custo = dinheiro.ler(linha["custo_fornecedor_dec"], linha["custo_fornecedor"])
+    return {"produto_id": linha["id"], "fornecedor_id": linha["fornecedor_id"], "quantidade": 1,
+            "valor": dinheiro.texto(custo), "moeda": linha["custo_fornecedor_moeda"]}
 
 
 def compra_na_fila(marketplace="mercadolivre", sku="ORG-001", margem=30.0) -> int:
     """Uma compra pendente como o worker monta (payload sem confirmações)."""
     pedido = inserir_pedido(marketplace=marketplace, estado=Estado.AGUARDANDO_APROVACAO.value)
     return aprovacao.enfileirar("compra_fornecedor", f"[ROTINA] Comprar 1x {sku}", {
-        "pedido_id": pedido, "fornecedor": "Fornecedor Teste", "canal": "email",
-        "contato": "pedidos@fornecedor.example", "sku": sku, "produto": "Organizador",
-        "quantidade": 1, "valor": 18.5, "marketplace": marketplace,
+        "pedido_id": pedido, **campos_do_produto(sku), "fornecedor": "Fornecedor Teste",
+        "canal": "email", "contato": "pedidos@fornecedor.example", "sku": sku,
+        "produto": "Organizador", "quantidade": 1, "valor": 18.5, "marketplace": marketplace,
         "pedido_externo": "5000000001", "margem_prevista": margem,
     }, pedido_id=pedido, valor=18.5)
 
@@ -935,8 +950,8 @@ def test_compra_sem_dados_bloqueia_pedindo_confirmacao():
                                            {"marketplace": "amazon", "sku": "NAO-EXISTE"})
     assert res.bloqueado and res.so_falta_confirmar
     assert {v.regra for v in res.bloqueios} == {
-        "AMZ-DROPSHIP", "AMZ-REEMBALAGEM", "PRAZO", "CATEGORIA-RESTRITA",
-        "MARGEM-NEGATIVA", "FISCAL-NF"}
+        "AMZ-DROPSHIP", "AMZ-REEMBALAGEM", "FORNECEDOR-TROCADO", "CUSTO-ALTERADO", "PRAZO",
+        "CATEGORIA-RESTRITA", "MARGEM-NEGATIVA", "FISCAL-NF"}
     assert all(v.saida and v.confirmacao for v in res.bloqueios)
 
 
@@ -974,7 +989,8 @@ def test_painel_nao_presume_o_valor_que_libera(sessao, nota_fiscal_confirmada):
 def test_categoria_regulada(nota_fiscal_confirmada, categoria, habilitacao, bloqueia, confirmacao):
     cadastrar(categoria_regulada=categoria, habilitacao_confirmada=habilitacao)
     res = conformidade.verificar_pendencia(
-        "compra_fornecedor", {"marketplace": "mercadolivre", "sku": "ORG-001", "margem_prevista": 25})
+        "compra_fornecedor", {"marketplace": "mercadolivre", "sku": "ORG-001", "margem_prevista": 25,
+                              **campos_do_produto()})
     assert res.bloqueado is bloqueia
     if bloqueia:
         assert [v.regra for v in res.bloqueios] == ["CATEGORIA-RESTRITA"]
@@ -983,7 +999,8 @@ def test_categoria_regulada(nota_fiscal_confirmada, categoria, habilitacao, bloq
 
 def test_nota_fiscal_negada_e_bloqueio_duro(monkeypatch):
     cadastrar(categoria_regulada="nenhuma")
-    payload = {"marketplace": "mercadolivre", "sku": "ORG-001", "margem_prevista": 25}
+    payload = {"marketplace": "mercadolivre", "sku": "ORG-001", "margem_prevista": 25,
+               **campos_do_produto()}
     monkeypatch.setattr(config.config.negocio, "emite_nota", False)
     res = conformidade.verificar_pendencia("compra_fornecedor", payload)
     assert [(v.regra, v.confirmacao) for v in res.bloqueios] == [("FISCAL-NF", False)]
@@ -1230,7 +1247,8 @@ def test_reembalagem_digitada_a_mao_e_lida_sem_bool(nota_fiscal_confirmada, valo
     with conectar() as c:
         c.execute("UPDATE produtos SET reembalagem_confirmada = ? WHERE sku = 'ORG-001'", (valor,))
     res = conformidade.verificar_pendencia(
-        "compra_fornecedor", {"marketplace": "amazon", "sku": "ORG-001", "margem_prevista": 30})
+        "compra_fornecedor", {"marketplace": "amazon", "sku": "ORG-001", "margem_prevista": 30,
+                              **campos_do_produto()})
     if confirmacao is None:
         assert not res.bloqueado
     else:
@@ -1245,7 +1263,7 @@ def test_habilitacao_digitada_a_mao_e_lida_sem_bool(nota_fiscal_confirmada, valo
     cadastrar(categoria_regulada="suplemento", habilitacao_confirmada=valor)
     res = conformidade.verificar_pendencia(
         "compra_fornecedor", {"marketplace": "mercadolivre", "sku": "ORG-001",
-                              "margem_prevista": 30})
+                              "margem_prevista": 30, **campos_do_produto()})
     if confirmacao is None:
         assert not res.bloqueado
     else:
@@ -1257,21 +1275,29 @@ def test_habilitacao_digitada_a_mao_e_lida_sem_bool(nota_fiscal_confirmada, valo
 def test_amazon_com_canal_desconhecido_pede_confirmacao_do_envio(nota_fiscal_confirmada, canal):
     cadastrar(canal=canal, categoria_regulada="nenhuma", reembalagem_confirmada=1)
     res = conformidade.verificar_pendencia(
-        "compra_fornecedor", {"marketplace": "amazon", "sku": "ORG-001", "margem_prevista": 25})
+        "compra_fornecedor", {"marketplace": "amazon", "sku": "ORG-001", "margem_prevista": 25,
+                              **campos_do_produto()})
     assert [(v.regra, v.confirmacao) for v in res.bloqueios] == [("AMZ-DROPSHIP", True)]
 
 
-def test_compra_de_produto_sem_fornecedor_bloqueia_pedindo_o_prazo(nota_fiscal_confirmada):
-    """O produto perdeu o fornecedor depois de a compra entrar na fila: o
+def test_compra_de_produto_que_perdeu_o_fornecedor_bloqueia(nota_fiscal_confirmada):
+    """O produto perdeu o fornecedor depois de a compra entrar na fila: a
+    ordem iria para o fornecedor antigo. Sem o fornecedor nem na fila, o
     prazo padrão do .env não pode tomar o lugar do prazo que falta."""
+    produto = cadastrar(sku="SEM-FORN", categoria_regulada="nenhuma")
+    payload = {"marketplace": "mercadolivre", "sku": "SEM-FORN", "margem_prevista": 25,
+               **campos_do_produto("SEM-FORN")}
     with conectar() as c:
-        c.execute("INSERT INTO produtos (sku, titulo, custo_fornecedor, fornecedor_id,"
-                  " categoria_regulada, criado_em) VALUES ('SEM-FORN', 'Produto', 10, NULL,"
-                  " 'nenhuma', ?)", (agora(),))
+        c.execute("UPDATE produtos SET fornecedor_id = NULL WHERE id = ?", (produto,))
+    res = conformidade.verificar_pendencia("compra_fornecedor", payload)
+    assert [(v.regra, v.confirmacao) for v in res.bloqueios] == [("FORNECEDOR-TROCADO", False)]
+
     res = conformidade.verificar_pendencia(
         "compra_fornecedor", {"marketplace": "mercadolivre", "sku": "SEM-FORN",
-                              "margem_prevista": 25})
-    assert [(v.regra, v.confirmacao) for v in res.bloqueios] == [("PRAZO", True)]
+                              "margem_prevista": 25, "produto_id": produto, "quantidade": 1,
+                              "valor": "18.50", "moeda": "BRL"})
+    assert [(v.regra, v.confirmacao) for v in res.bloqueios] == [
+        ("FORNECEDOR-TROCADO", True), ("PRAZO", True)]
 
 
 def test_publicar_anuncio_sem_dados_bloqueia_pedindo_confirmacao(nota_fiscal_confirmada):

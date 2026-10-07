@@ -290,14 +290,16 @@ def fila_de_compras(nota_fiscal_confirmada):
     with conectar() as c:
         c.execute("INSERT INTO fornecedores (id, nome, canal, contato, prazo_dias)"
                   " VALUES (1, 'Fornecedor Teste', 'email', 'pedidos@fornecedor.example', 4)")
-        c.execute("INSERT INTO produtos (id, sku, titulo, custo_fornecedor, peso_kg,"
-                  " fornecedor_id, categoria_regulada, criado_em)"
-                  " VALUES (1, 'ORG-001', 'Organizador', 18.50, 0.4, 1, 'nenhuma', ?)",
+        # Custo e venda com moeda explícita: sem ela, o worker não calcula margem.
+        c.execute("INSERT INTO produtos (id, sku, titulo, custo_fornecedor, custo_fornecedor_dec,"
+                  " custo_fornecedor_moeda, peso_kg, fornecedor_id, categoria_regulada, criado_em)"
+                  " VALUES (1, 'ORG-001', 'Organizador', 18.50, '18.50', 'BRL', 0.4, 1, 'nenhuma', ?)",
                   (agora(),))
         for id_externo in ("3000000001", "3000000002"):
             c.execute("INSERT INTO pedidos (marketplace, id_externo, produto_id, quantidade,"
-                      " valor_bruto, estado, criado_em, atualizado_em)"
-                      " VALUES ('mercadolivre', ?, 1, 1, 54.90, ?, ?, ?)",
+                      " valor_bruto, valor_bruto_dec, valor_bruto_moeda, estado, criado_em,"
+                      " atualizado_em)"
+                      " VALUES ('mercadolivre', ?, 1, 1, 54.90, '54.90', 'BRL', ?, ?, ?)",
                       (id_externo, Estado.NOVO.value, agora(), agora()))
     assert worker.analisar_novos() == 2
     assert worker.montar_ordens_de_compra() == 2

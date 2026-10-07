@@ -172,6 +172,9 @@ class MercadoLivre:
             "sku": item.get("item", {}).get("seller_sku") or item.get("item", {}).get("id", ""),
             "quantidade": item.get("quantity", 1),
             "valor_bruto": float(bruto.get("total_amount", 0)),
+            # A moeda do pedido como o ML informa (BRL no Brasil). Sem ela, o
+            # worker grava "moeda não informada" e não calcula a margem.
+            "moeda": bruto.get("currency_id"),
             "comprador_nome": f"{comprador.get('first_name','')} {comprador.get('last_name','')}".strip(),
             "comprador_id": str(comprador.get("id", "")),
             "shipping_id": str((bruto.get("shipping") or {}).get("id", "")),

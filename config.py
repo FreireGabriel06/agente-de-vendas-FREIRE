@@ -11,6 +11,9 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# Não importa nada do projeto: dá para importar daqui sem ciclo.
+from core import dinheiro
+
 # Código e arquivos que vêm com ele (.env.example, painel.html).
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -128,6 +131,23 @@ def _inteiro(variavel: str, padrao: int, minimo: int, maximo: int | None = None)
     return valor
 
 
+def _numero(variavel: str, padrao: str) -> float:
+    """Número com casas do ambiente (ou do .env): margem, teto e alíquota.
+    Texto que não é número interrompe a importação, como sempre interrompeu
+    (ValueError do float). Número que
+    o worker não lê em Decimal (nan, inf, 1e999, ou grande demais:
+    core/dinheiro.do_real) não derruba a importação: vale o padrão, com aviso
+    na saída de erro. Antes ele passava daqui e quebrava a etapa do worker a
+    cada ciclo, na conta da margem ou na comparação com o teto."""
+    bruto = os.getenv(variavel, padrao)
+    valor = float(bruto)
+    if dinheiro.do_real(valor) is None:
+        print(f"Aviso: {variavel}={bruto.strip()!r} não vale; usando {padrao}. Use um número "
+              "finito, com ponto (nan, inf e 1e999 não valem).", file=sys.stderr)
+        return float(padrao)
+    return valor
+
+
 # Menor intervalo do worker, em segundos. Abaixo disso o laço martela o
 # marketplace e a Claude API sem pausa.
 INTERVALO_MINIMO = 30
@@ -221,17 +241,17 @@ class ConfigNegocio:
     # Margem líquida mínima aceitável. Abaixo disso o pedido é recusado
     # automaticamente (estado RECUSADO_MARGEM) — é a trava que impede vender
     # no prejuízo.
-    margem_minima_pct: float = float(os.getenv("MARGEM_MINIMA_PCT", "18"))
+    margem_minima_pct: float = _numero("MARGEM_MINIMA_PCT", "18")
 
     # Só muda o rótulo na fila: compra até este valor aparece como [ROTINA],
     # acima dele como [ACIMA DO TETO]. Não existe compra automática abaixo do
     # teto: toda compra espera o seu OK. O nome da variável ficou da versão
     # antiga.
-    teto_compra_automatica: float = float(os.getenv("TETO_COMPRA_AUTOMATICA", "300"))
+    teto_compra_automatica: float = _numero("TETO_COMPRA_AUTOMATICA", "300")
 
     # Imposto estimado sobre a venda (Simples Nacional, anexo de comércio).
     # Ajuste pra sua faixa real de faturamento.
-    aliquota_imposto_pct: float = float(os.getenv("ALIQUOTA_IMPOSTO_PCT", "4"))
+    aliquota_imposto_pct: float = _numero("ALIQUOTA_IMPOSTO_PCT", "4")
 
     # Quantos dias de prazo o fornecedor leva. Entra no cálculo de risco
     # de estourar o prazo do marketplace.
