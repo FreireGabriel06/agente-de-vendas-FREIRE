@@ -28,6 +28,7 @@ import base64
 import hashlib
 import json
 import os
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -36,6 +37,13 @@ from core import dinheiro
 from db import conectar, agora, registrar_evento
 
 ARQ_CHAVE = DATA_DIR / ".chave_lgpd"
+# Eliminações atendidas (art. 18, VI), fora do banco: uma restauração de backup
+# reaplica as que vieram depois dele. Só o pseudônimo do comprador, nunca o id.
+ARQ_ELIMINACOES = DATA_DIR / ".eliminacoes_lgpd.jsonl"
+
+
+class ErroChaveLGPD(RuntimeError):
+    """A chave LGPD sumiu com dados cifrados no banco. Não se gera outra."""
 
 # Prazo de guarda do dado pessoal, em dias. 5 anos cobre prescrição do CDC
 # (art. 27) e o prazo fiscal. Depois disso o PII vira lixo de risco.
@@ -80,6 +88,13 @@ def _obter_chave() -> bytes:
         return env.encode()
     if ARQ_CHAVE.exists():
         return ARQ_CHAVE.read_bytes()
+    # Achado S-11 da auditoria: antes, uma chave nova nascia em silêncio e os
+    # dados já cifrados ficavam ilegíveis para sempre.
+    if _ha_dado_cifrado():
+        raise ErroChaveLGPD(
+            "A chave LGPD não foi encontrada (nem CHAVE_LGPD nem .chave_lgpd), mas o banco "
+            "tem dados de comprador cifrados. Restaure .chave_lgpd do backup ou defina "
+            "CHAVE_LGPD. Uma chave nova deixaria esses dados ilegíveis, então nenhuma é gerada.")
 
     from cryptography.fernet import Fernet
     chave = Fernet.generate_key()
@@ -89,6 +104,18 @@ def _obter_chave() -> bytes:
                      "Chave de criptografia gerada. Faça backup: sem ela os "
                      "dados de comprador ficam ilegíveis.")
     return chave
+
+
+def _ha_dado_cifrado() -> bool:
+    """Algum pedido tem nome, id ou endereço cifrado (token Fernet)?"""
+    try:
+        with conectar() as conn:
+            return conn.execute(
+                "SELECT 1 FROM pedidos WHERE comprador_nome LIKE 'gAAAA%'"
+                " OR comprador_id LIKE 'gAAAA%' OR endereco_json LIKE 'gAAAA%' LIMIT 1"
+            ).fetchone() is not None
+    except sqlite3.OperationalError:
+        return False
 
 
 def cifrar(texto: str | None) -> str | None:
@@ -346,10 +373,24 @@ def eliminar_dados(identificador: str) -> int:
         registrar_acesso(l["id"], "eliminacao", "painel", "direito de eliminação art. 18, VI")
         removidos += 1
 
+    if removidos:
+        anotar_eliminacao(identificador)
+
     registrar_evento("info", "lgpd",
                      f"Eliminação atendida: {removidos} registro(s). "
                      f"Dados fiscais mantidos por obrigação legal (art. 16, I).")
     return removidos
+
+
+def anotar_eliminacao(identificador: str) -> None:
+    """Guarda o pseudônimo fora do banco, para uma restauração reaplicar."""
+    linha = json.dumps({"pseudonimo": pseudonimizar(identificador), "em": agora()})
+    with open(ARQ_ELIMINACOES, "a", encoding="utf-8") as f:
+        f.write(linha + "\n")
+    try:
+        ARQ_ELIMINACOES.chmod(0o600)
+    except OSError:
+        pass
 
 
 def solicitacoes_vencendo(dias: int = 5) -> list:

@@ -40,7 +40,9 @@ Pedido em PROBLEMA, depois de corrigido o cadastro (nenhuma compra dele pode ter
 """
 import argparse
 import re
+import os
 import sys
+from pathlib import Path
 
 from config import avisar_pasta_de_dados, config
 from db import inicializar, conectar
@@ -492,6 +494,42 @@ def cmd_eventos(args):
         print(f"  {l['ocorrido_em'][11:19]} [{l['nivel']:<7}] {l['origem']:<14} {l['mensagem']}")
 
 
+def _senha_do_backup(confirmar: bool) -> str:
+    """BACKUP_SENHA do ambiente, ou digitada (sem eco). Nunca por argumento:
+    ficaria no histórico do terminal."""
+    senha = os.environ.get("BACKUP_SENHA")
+    if senha:
+        return senha
+    import getpass
+    senha = getpass.getpass("Senha do backup: ")
+    if confirmar and getpass.getpass("Repita a senha: ") != senha:
+        raise ValueError("As senhas não conferem.")
+    return senha
+
+
+def cmd_backup(args):
+    """Backup cifrado (core/backup.py): banco e chaves juntos, senha à parte."""
+    from core import backup
+
+    if args.acao == "criar":
+        arquivo = backup.criar(Path(args.destino), _senha_do_backup(confirmar=True))
+        print(f"Backup cifrado gravado: {arquivo}")
+        print("Guarde a senha longe do arquivo. Sem ela o backup não abre; com os dois, "
+              "qualquer pessoa lê os dados.")
+    elif args.acao == "verificar":
+        m = backup.verificar(Path(args.arquivo), _senha_do_backup(confirmar=False))
+        print(f"Backup de {m['criado_em']} confere: {m['pedidos']} pedido(s); "
+              f"partes: {', '.join(sorted(m['partes']))}.")
+    elif args.acao == "restaurar":
+        eliminacoes = Path(args.eliminacoes) if args.eliminacoes else None
+        r = backup.restaurar(Path(args.arquivo), _senha_do_backup(confirmar=False),
+                             Path(args.pasta), eliminacoes)
+        print(f"Restaurado em {args.pasta} (backup de {r['criado_em']}).")
+        print(f"  Reaplicado: {r['expurgados']} expurgo(s) por retenção, "
+              f"{r['eliminados']} eliminação(ões) atendidas depois do backup.")
+        print(f"  Para usar: defina AGENTE_DADOS={args.pasta} e inicie o agente.")
+
+
 def main():
     p = argparse.ArgumentParser(description="Agente comercial", formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -555,6 +593,18 @@ def main():
     re_.add_argument("--moeda-venda", help="moeda da venda, ISO 4217, só para pedido sem moeda: "
                                            + ", ".join(sorted(dinheiro.MOEDAS_ACEITAS)))
     pe.set_defaults(func=cmd_pedido)
+
+    bk = sub.add_parser("backup", help="backup cifrado do banco com as chaves")
+    acoes_bk = bk.add_subparsers(dest="acao", required=True)
+    acoes_bk.add_parser("criar", help="grava um .agvbkp na pasta indicada").add_argument(
+        "--destino", required=True, help="pasta do backup (de preferência fora deste computador)")
+    acoes_bk.add_parser("verificar", help="abre e confere sem gravar").add_argument("arquivo")
+    rs = acoes_bk.add_parser("restaurar", help="restaura numa pasta nova ou vazia")
+    rs.add_argument("arquivo")
+    rs.add_argument("--pasta", required=True, help="pasta nova ou vazia para os dados restaurados")
+    rs.add_argument("--eliminacoes", default=None,
+                    help="arquivo .eliminacoes_lgpd.jsonl a reaplicar (padrão: o da pasta de dados atual)")
+    bk.set_defaults(func=cmd_backup)
 
     args = p.parse_args()
     # Antes de qualquer gravação: sem AGENTE_DADOS, diz qual pasta vai ser usada.

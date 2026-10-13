@@ -112,6 +112,7 @@ What the automated suite covers, and how to run it, is under [Tests](#tests).
 | Marketplace credentials encrypted at rest: a `credenciais` table in SQLite, Fernet/MultiFernet, key in `CHAVE_COFRE` or `.chave_cofre`, separate from the buyer-data key; a wrong or missing key fails closed | `core/cofre.py` | Tested |
 | Connectors, panel and reply bot read and write secrets through the vault at use time; legacy `.token_ml.json` / `.token_shopee.json` imported once and left untouched; plaintext secrets already in `.env` keep working | `conectores/`, `painel/`, `config.py`, `atendimento/bot.py` | Tested with fake token endpoints; not validated against live accounts |
 | Vault commands: `cofre migrar`, `cofre rotacionar`, `cofre listar`, `cofre apagar` | `cli.py` | Tested |
+| Encrypted backup of the database with its keys (`backup criar`, `verificar`, `restaurar`): restore only into a new or empty folder, then retention purge and later deletions reapplied; the LGPD key is never silently recreated over encrypted data | `core/backup.py`, `core/privacidade.py`, `cli.py` | Tested (create, verify, restore, wrong password, tampered file, occupied folder, retention, deletions) |
 | Standalone executable | `agente.spec` | Not verified — no build has been run; the rule that keeps data next to the executable is tested without one |
 
 ---
@@ -811,6 +812,37 @@ only, never values.
 
 ---
 
+## Backup and restore
+
+The database is unreadable without its keys (buyer data and credentials are
+encrypted), so a backup carries the database **and** the keys, encrypted with
+a separate backup password (scrypt, then Fernet). Whoever holds the file but
+not the password reads nothing; keep the two apart.
+
+```bash
+python cli.py backup criar --destino D:/backups      # asks for the password twice
+python cli.py backup verificar D:/backups/agente-backup-20261013-180000.agvbkp
+python cli.py backup restaurar D:/backups/agente-backup-20261013-180000.agvbkp --pasta D:/agente-restaurado
+```
+
+`BACKUP_SENHA` in the environment replaces the prompt (for scheduled backups);
+the password is never a command-line argument. The copy of the database is
+consistent even while the worker writes (SQLite backup API). `verificar`
+checks the password, every part against the manifest and SQLite's integrity
+check, without writing anything.
+
+Restoring always goes to a new or empty folder; it never writes over existing
+data. It then reapplies the retention purge (`RETENCAO_PII_DIAS`) and every
+buyer-data deletion handled after the backup was made: each deletion is also
+recorded outside the database, as a pseudonym only, in
+`.eliminacoes_lgpd.jsonl` (pass `--eliminacoes` to use the file from another
+folder). Point `AGENTE_DADOS` at the restored folder to use it.
+
+If the LGPD key disappears while the database holds encrypted buyer data, the
+program stops with an error instead of creating a new key, which would make
+that data unreadable for good. Restore `.chave_lgpd` from a backup or set
+`CHAVE_LGPD`.
+
 ## Design decisions
 
 **People release irreversible actions.** Purchases, public buyer replies, price
@@ -868,6 +900,7 @@ Sheet and the cryptography and secret-management chapters of OWASP ASVS 5.0.
 - One shared operator, no roles and no HTTPS by default. Keep the panel on `127.0.0.1` until both exist.
 - Mercado Livre drives the purchase flow. Amazon orders are synced read-only for monitoring and never enter the purchase flow (Amazon forbids a third party as the sender); the panel screen does not list them yet (the API does). Shopee stops at the connection test.
 - Connecting sellers other than yourself on Amazon needs a public developer registration and an app approved by Amazon; that review is outside this project's control.
+- Backups are manual (or scheduled by you with `BACKUP_SENHA`); nothing copies them off the machine. A restore reapplies only the deletions recorded in the eliminations file it is given.
 - No integration has been validated with a live seller account.
 - Purchase orders are text files, with or without simulation mode; nothing reaches suppliers.
 - Margins rely on average fees; confirm the real fees of each category.
@@ -923,12 +956,12 @@ Planned, in this order. Each item says what already exists.
 2. **Panel login**, then one end-to-end integration: seller consent,
    authenticated reads, storage, re-runs without duplicates and failure
    handling.
-3. **Pilot MVP:** a panel screen for products and suppliers (the API and the
-   CLI exist); paginated, incremental sync of listings, stock and orders;
-   alerts for stale data, expired connections and low stock; price and stock
-   updates with dry run, limits and an audit log.
-4. **Operations:** one isolated instance per client, backups with restore
-   tests, health monitoring; interface screens after the backend is stable.
+3. **Pilot MVP:** paginated, incremental sync of Amazon orders, listings and
+   FBA stock and the four alerts exist (API only); next are price and stock
+   updates with dry run, limits and an audit log, and the panel screens.
+4. **Operations:** encrypted backups with tested restore exist; next are
+   one isolated instance per client, HTTPS and health monitoring; interface
+   screens after the backend is stable.
 
 Mercado Livre and Shopee receive fixes only in this cycle. Walmart Marketplace
 is a candidate after the first pilot.
