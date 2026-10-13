@@ -414,6 +414,8 @@ def api_url_autorizacao(provedor: str, request: Request):
             return {"url": configurar.ml_url_autorizacao(request.state.sid)}
         if provedor == "shopee":
             return {"url": configurar.shopee_url_autorizacao(_redirect_uri(request, "shopee"))}
+        if provedor == "amazon":
+            return {"url": configurar.amazon_url_autorizacao(request.state.sid)}
         raise HTTPException(400, "Provedor desconhecido.")
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -453,6 +455,85 @@ def oauth_ml_retorno(request: Request, code: str = "", error: str = ""):
         return _pagina_retorno(False, _falha_generica("Mercado Livre", e))
 
 
+# Amazon: Website Authorization Workflow (ver painel/configurar.py). As três
+# respostas levam Referrer-Policy: no-referrer, como a documentação pede: o
+# state e o código não vazam no Referer para outro site.
+_SEM_REFERER = {"Referrer-Policy": "no-referrer"}
+
+
+@app.get("/oauth/amazon/login")
+def oauth_amazon_login(request: Request, amazon_callback_uri: str = "", amazon_state: str = "",
+                       selling_partner_id: str = ""):
+    """URI de log-in do app: a Amazon traz o vendedor aqui depois do consentimento.
+    O middleware já exigiu a sessão do painel; aqui o vendedor volta à Amazon
+    com um state novo, preso a esta sessão."""
+    from painel import configurar
+    try:
+        destino = configurar.amazon_callback(amazon_callback_uri, amazon_state, request.state.sid)
+    except (ValueError, seguranca.StateInvalido) as e:
+        return HTMLResponse(_pagina_retorno(False, str(e)), headers=_SEM_REFERER)
+    return RedirectResponse(destino, status_code=303, headers=_SEM_REFERER)
+
+
+@app.get("/oauth/amazon/retorno", response_class=HTMLResponse)
+def oauth_amazon_retorno(request: Request):
+    """Redirect URI do app. Só funciona servindo HTTPS no endereço cadastrado;
+    sem isso, cole a URL de retorno no painel (concluir-amazon)."""
+    from painel import configurar
+    try:
+        d = configurar.amazon_concluir(dict(request.query_params), request.state.sid)
+    except (ValueError, seguranca.StateInvalido, cofre.ErroCofre) as e:
+        return HTMLResponse(_pagina_retorno(False, str(e)), headers=_SEM_REFERER)
+    except Exception as e:
+        return HTMLResponse(_pagina_retorno(False, _falha_generica("Amazon", e)), headers=_SEM_REFERER)
+    registrar_evento("info", "configuracao",
+                     f"Amazon conectada (vendedor {d['selling_partner_id'] or 'sem id'}) "
+                     f"por {request.state.operador}")
+    return HTMLResponse(_pagina_retorno(True, "Amazon conectada."), headers=_SEM_REFERER)
+
+
+@app.post("/api/configuracao/concluir-amazon")
+async def api_concluir_amazon(request: Request):
+    """Recebe a URL de retorno da Amazon colada e conclui a conexão."""
+    from painel import configurar
+    corpo = await request.json()
+    try:
+        d = configurar.amazon_concluir(configurar.parametros_da_url(corpo.get("retorno", "")),
+                                       request.state.sid)
+    except (ValueError, seguranca.StateInvalido, cofre.ErroCofre) as e:
+        return {"ok": False, "detalhe": str(e)}
+    except Exception as e:
+        return {"ok": False, "detalhe": _falha_generica("Amazon", e)}
+    registrar_evento("info", "configuracao",
+                     f"Amazon conectada (vendedor {d['selling_partner_id'] or 'sem id'}) "
+                     f"por {request.state.operador}")
+    return {"ok": True, "detalhe": "Amazon conectada."}
+
+
+@app.get("/api/amazon/pedidos")
+def api_amazon_pedidos(limite: int = 100):
+    """Pedidos lidos da Amazon (monitoramento). Sem dado de comprador."""
+    limite = max(1, min(limite, 500))
+    with conectar() as conn:
+        pedidos = [dict(l) for l in conn.execute(
+            "SELECT amazon_order_id, marketplace_id, status, canal, comprado_em,"
+            " atualizado_na_amazon, total_dec, total_moeda, itens_pendentes, itens_lidos"
+            " FROM amazon_pedidos ORDER BY comprado_em DESC LIMIT ?", (limite,))]
+        for p in pedidos:
+            p["itens"] = [dict(i) for i in conn.execute(
+                "SELECT order_item_id, asin, sku, titulo, quantidade, quantidade_enviada,"
+                " preco_dec, preco_moeda FROM amazon_itens WHERE amazon_order_id = ?"
+                " ORDER BY order_item_id", (p["amazon_order_id"],))]
+    return {"pedidos": pedidos}
+
+
+@app.get("/api/amazon/sincronizacao")
+def api_amazon_sincronizacao():
+    """Cursor, última tentativa, último sucesso e resultado da sincronização."""
+    from core import sincronizacao
+    return sincronizacao.estado() or {"fonte": sincronizacao.FONTE, "resultado": "nunca rodou"}
+
+
 @app.post("/api/configuracao/salvar")
 async def api_salvar_config(request: Request):
     """Grava as chaves de aplicação — nunca senha. Segredo vai para o cofre
@@ -463,6 +544,7 @@ async def api_salvar_config(request: Request):
         "ML_CLIENT_ID", "ML_CLIENT_SECRET", "ML_SELLER_ID",
         "SHOPEE_PARTNER_ID", "SHOPEE_PARTNER_KEY", "SHOPEE_SHOP_ID", "SHOPEE_SANDBOX",
         "AMZ_LWA_CLIENT_ID", "AMZ_LWA_CLIENT_SECRET", "AMZ_REFRESH_TOKEN",
+        "AMZ_APPLICATION_ID", "AMZ_REDIRECT_URI",
         "ANTHROPIC_API_KEY", "MARGEM_MINIMA_PCT", "TETO_COMPRA_AUTOMATICA",
         "ALIQUOTA_IMPOSTO_PCT", "PRAZO_FORNECEDOR_DIAS",
     }

@@ -260,6 +260,26 @@ def criar_state_oauth(provedor: str, sid: str | None, dados: dict | None = None)
     return state
 
 
+def consumir_consentimento_pendente(provedor: str, sid: str | None) -> None:
+    """Consome a autorização mais recente de `provedor` aberta por esta sessão
+    e ainda válida, ou levanta StateInvalido. Serve a um passo em que o
+    provedor não devolve o nosso state (a URI de log-in da Amazon): sem um
+    consentimento que esta sessão começou, o passo para. Assim um link da URI
+    de log-in mandado por outra pessoa não liga a conta dela a este painel."""
+    if not sid:
+        raise StateInvalido("Entre no painel antes de autorizar.")
+    momento = time.monotonic()
+    vinculo = _vinculo(sid)
+    with _trava_states:
+        candidatos = [k for k, v in _states.items()
+                      if v["provedor"] == provedor and v["vinculo"] == vinculo
+                      and momento - v["criado"] <= STATE_VALIDADE_S]
+        if not candidatos:
+            raise StateInvalido("Nenhuma autorização foi aberta por esta sessão nos últimos "
+                                "10 minutos. Comece pelo botão de autorizar no painel.")
+        del _states[max(candidatos, key=lambda k: _states[k]["criado"])]
+
+
 def consumir_state_oauth(state: str | None, provedor: str, sid: str | None) -> dict:
     """Devolve os `dados` da autorização ou levanta StateInvalido. O state sai
     da memória antes de qualquer conferência: não serve para outra tentativa."""

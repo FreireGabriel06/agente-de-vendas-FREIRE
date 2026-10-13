@@ -142,6 +142,51 @@ CREATE TABLE IF NOT EXISTS eventos (
     ocorrido_em  TEXT NOT NULL
 );
 
+-- Amazon (lote 7): só leitura, para monitoramento. Pedidos da Amazon não entram
+-- no fluxo de compra com fornecedor: a Amazon proíbe que um terceiro apareça
+-- como remetente (ver conectores/amazon.py). Nada de comprador é guardado:
+-- nem nome, nem e-mail, nem endereço (BuyerInfo e ShippingAddress ficam de fora).
+CREATE TABLE IF NOT EXISTS amazon_pedidos (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    amazon_order_id    TEXT NOT NULL UNIQUE,
+    marketplace_id     TEXT,
+    status             TEXT,
+    canal              TEXT,             -- FulfillmentChannel: AFN (FBA) ou MFN
+    comprado_em        TEXT,             -- PurchaseDate (UTC, ISO 8601)
+    atualizado_na_amazon TEXT,           -- LastUpdateDate
+    total_dec          TEXT,             -- OrderTotal.Amount, texto decimal
+    total_moeda        TEXT,             -- OrderTotal.CurrencyCode
+    itens_pendentes    INTEGER,          -- NumberOfItemsUnshipped
+    itens_lidos        INTEGER NOT NULL DEFAULT 0,
+    sincronizado_em    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS amazon_itens (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    amazon_order_id    TEXT NOT NULL REFERENCES amazon_pedidos(amazon_order_id),
+    order_item_id      TEXT NOT NULL,
+    asin               TEXT,
+    sku                TEXT,
+    titulo             TEXT,
+    quantidade         INTEGER,
+    quantidade_enviada INTEGER,
+    preco_dec          TEXT,             -- ItemPrice.Amount (total da linha)
+    preco_moeda        TEXT,
+    UNIQUE(amazon_order_id, order_item_id)
+);
+
+-- Uma linha por fonte de dados: cursor, última tentativa, último sucesso e
+-- o resultado. Último sucesso e última tentativa são separados: uma falha não
+-- apaga a data do último dado válido.
+CREATE TABLE IF NOT EXISTS sincronizacoes (
+    fonte              TEXT PRIMARY KEY,
+    cursor             TEXT,
+    ultima_tentativa   TEXT,
+    ultimo_sucesso     TEXT,
+    resultado          TEXT,
+    detalhe            TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_pedidos_estado ON pedidos(estado);
 CREATE INDEX IF NOT EXISTS idx_aprov_status  ON aprovacoes(status);
 CREATE INDEX IF NOT EXISTS idx_oport_score   ON oportunidades(score DESC);

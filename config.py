@@ -216,8 +216,18 @@ class ConfigMercadoLivre:
 class ConfigAmazon:
     """Amazon SP-API. Exige conta de vendedor aprovada e app registrado."""
     lwa_client_id: str = os.getenv("AMZ_LWA_CLIENT_ID", "")
-    marketplace_id: str = os.getenv("AMZ_MARKETPLACE_ID", "A2Q3Y263D00KWC")  # BR
+    # Padrão: Amazon.com (EUA), o escopo da beta. Tabela oficial "Marketplace
+    # IDs" da SP-API; a região do endpoint precisa casar com o marketplace
+    # (EUA, Canadá, México e Brasil: NA; Europa: EU).
+    marketplace_id: str = os.getenv("AMZ_MARKETPLACE_ID", "ATVPDKIKX0DER")
     regiao_endpoint: str = os.getenv("AMZ_ENDPOINT", "https://sellingpartnerapi-na.amazon.com")
+    # Autorização pelo site (Website Authorization Workflow): o ID do app no
+    # Solution Provider Portal e o Seller Central do marketplace.
+    application_id: str = os.getenv("AMZ_APPLICATION_ID", "")
+    seller_central: str = os.getenv("AMZ_SELLER_CENTRAL", "https://sellercentral.amazon.com")
+    redirect_uri: str = os.getenv("AMZ_REDIRECT_URI", "")
+    # 'beta' só para testar um app ainda em rascunho (Draft).
+    versao_app: str = os.getenv("AMZ_APP_VERSAO", "")
 
     @property
     def lwa_client_secret(self) -> str:
