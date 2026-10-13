@@ -31,7 +31,8 @@ DESTINOS = {
 # Esses ficam na raiz do projeto.
 RAIZ = {
     "executar.py", "worker.py", "cli.py", "db.py", "config.py", "demo.py",
-    "organizar.py", "requirements.txt", "agente.spec", "README.md",
+    "organizar.py", "requirements.txt", "requirements-dev.txt", "constraints.txt",
+    "agente.spec", "README.md", ".gitleaks.toml",
     "iniciar.bat", "iniciar.sh", ".env.example", ".gitignore",
 }
 

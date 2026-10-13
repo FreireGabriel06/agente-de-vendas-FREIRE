@@ -149,7 +149,7 @@ Manual start:
 ```bash
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+pip install -r requirements.txt -c constraints.txt
 cp .env.example .env             # Windows: copy .env.example .env
 python executar.py
 ```
@@ -394,7 +394,7 @@ when it arrived has no product linked, and re-analysis does not link one.
 ## Tests
 
 ```bash
-pip install -r requirements.txt -r requirements-dev.txt
+pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
 python -m pytest -q
 ```
 
