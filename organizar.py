@@ -32,7 +32,7 @@ DESTINOS = {
 RAIZ = {
     "executar.py", "worker.py", "cli.py", "db.py", "config.py", "demo.py",
     "organizar.py", "requirements.txt", "requirements-dev.txt", "constraints.txt",
-    "agente.spec", "README.md", ".gitleaks.toml",
+    "agente.spec", "README.md", "SECURITY.md", ".gitleaks.toml",
     "iniciar.bat", "iniciar.sh", ".env.example", ".gitignore",
 }
 

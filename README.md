@@ -110,6 +110,7 @@ What the automated suite covers, and how to run it, is under [Tests](#tests).
 | Marketplace errors without the response body or the full URL: the message keeps the method, the path without its query, the HTTP status and the marketplace's error code when it looks like one; a network failure keeps only the exception type (the Shopee URL carries the access token). The approval queue, events and the panel's HTTP 500 show only messages written by the project; any other exception shows only its type, with the stack trace (no message) in the event | `core/erros.py`, `conectores/`, `core/aprovacao.py`, `painel/app.py` | Tested with fake marketplaces |
 | Second factor by authenticator app (TOTP, RFC 6238, standard library only): secret in the encrypted vault, a code works once, a wrong code counts toward the lockout; operator deactivation ends every session at once — see [Panel security](#panel-security) | `core/seguranca.py`, `cli.py`, `painel/app.py` | Tested |
 | HTTPS: the panel serves TLS itself (`TLS_CERT`, `TLS_CHAVE`) or trusts `X-Forwarded-Proto` only from a reverse proxy (`PROXY_HTTPS`, `PROXY_IPS`); it refuses to start on a non-local address without one of them; `Secure` session cookie and HSTS under HTTPS; `nosniff`, `X-Frame-Options: DENY` and `Referrer-Policy` on every response | `executar.py`, `painel/app.py` | Tested |
+| Amazon data deletion (DPP 1.7): `cli.py amazon apagar-dados --motivo …` removes orders, items, listings, sync state, alerts and the refresh token, overwrites the freed pages and compacts the database; restoring a backup made before the deletion deletes it again; the expired-connection alert states the 30-day deadline. An address that reaches the login limit records a warning event. Reporting, controls and the incident response plan are in [SECURITY.md](SECURITY.md) | `core/sincronizacao.py`, `core/backup.py`, `cli.py`, `SECURITY.md` | Tested |
 | Accounts and passwords by the Amazon Data Protection Policy (1.2.2, 1.4.1): MFA required whenever the panel listens beyond loopback (or with `MFA_OBRIGATORIO=true`), the panel refuses to start exposed while an active operator lacks it; passwords of 12+ characters with upper and lower case, a digit and a symbol, no part of the operator name, none of the last 10, changed at most once a day (unless leaked) and valid for 365 days; `cli.py operadores` lists operators, MFA, last login and password age for the access review | `core/seguranca.py`, `cli.py`, `executar.py` | Tested |
 | Panel exposed to a network: login limited per address (5 errors in 15 minutes → HTTP 429) and per account (10 consecutive errors → 15-minute lock), so one attacker cannot lock the operator out; an unknown operator costs the same password check as a wrong password; session id stored only as SHA-256; `Host` must be local or listed in `HOSTS_PAINEL`; Content-Security-Policy and `Cache-Control: no-store` on every response; login only as JSON; no OpenAPI schema; numeric inputs checked with ranges — see [Panel security](#panel-security) | `core/seguranca.py`, `painel/app.py`, `executar.py` | Tested |
 | OAuth return: `state` created by the same panel session, single use, valid for 10 minutes; return pages escape their output and show fixed error messages | `core/seguranca.py`, `painel/app.py`, `painel/configurar.py` | Tested with a fake token endpoint |
@@ -852,12 +853,19 @@ recorded outside the database, as a pseudonym only, in
 `.eliminacoes_lgpd.jsonl` (pass `--eliminacoes` to use the file from another
 folder). Point `AGENTE_DADOS` at the restored folder to use it.
 
+The same file records each Amazon data deletion (`cli.py amazon apagar-dados`).
+Restoring a backup made before the latest deletion deletes the Amazon data
+again, so an old backup cannot bring it back.
+
 If the LGPD key disappears while the database holds encrypted buyer data, the
 program stops with an error instead of creating a new key, which would make
 that data unreadable for good. Restore `.chave_lgpd` from a backup or set
 `CHAVE_LGPD`.
 
 ## Panel security
+
+Vulnerability reporting, the full list of controls and the incident response
+plan are in [SECURITY.md](SECURITY.md).
 
 Second factor (TOTP, the code from Google Authenticator, Aegis, 1Password and
 similar apps):

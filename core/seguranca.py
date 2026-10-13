@@ -433,7 +433,14 @@ def _anotar_falha_do_ip(ip: str | None) -> None:
                 _falhas_recentes(outro, momento)
             if len(_falhas_por_ip) >= IPS_VIGIADOS_MAX:
                 _falhas_por_ip.pop(next(iter(_falhas_por_ip)))
-        _falhas_por_ip.setdefault(ip, []).append(momento)
+        falhas = _falhas_recentes(ip, momento) + [momento]
+        _falhas_por_ip[ip] = falhas
+    # Alarme de tentativas repetidas (DPP 2.6.2): um evento quando o endereço
+    # chega ao limite; as recusas seguintes, na mesma janela, não repetem.
+    if len(falhas) == FALHAS_POR_IP:
+        registrar_evento("atencao", "seguranca",
+                         f"Endereço {ip} errou o login {FALHAS_POR_IP} vezes em {JANELA_IP_MIN} min;"
+                         " ele espera o fim da janela")
 
 
 def _limpar_ip(ip: str | None) -> None:

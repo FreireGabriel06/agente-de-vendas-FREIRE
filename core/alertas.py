@@ -44,7 +44,9 @@ def condicoes(agora_utc: datetime | None = None) -> dict[tuple[str, str], tuple[
         rotulo = ROTULOS.get(fonte, fonte)
         if s.get("resultado") == "conexao_vencida":
             achadas[("conexao_vencida", "amazon")] = (
-                "A Amazon recusou a autorização. Autorize o app de novo pelo painel. "
+                "A Amazon recusou a autorização. Autorize o app de novo pelo painel. Se o "
+                "vendedor revogou o acesso, apague os dados da Amazon em até 30 dias: "
+                "python cli.py amazon apagar-dados --motivo revogado. "
                 f"Último dado válido: {_quando(ultimo)}.", ultimo)
         elif s.get("resultado") == "erro":
             achadas[("sincronizacao_falhou", fonte)] = (

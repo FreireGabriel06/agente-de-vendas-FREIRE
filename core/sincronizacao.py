@@ -12,10 +12,12 @@ Resultados: 'ok'; 'erro' (falha da API ou da rede); 'conexao_vencida' (a LWA
 recusou o refresh token: só autorizar de novo resolve); 'indisponivel' (a
 conta não tem acesso àquela API, como uma conta sem FBA).
 """
+import json
 import os
 from datetime import datetime, timedelta, timezone
 
 from conectores import amazon as conector
+from core import cofre, privacidade
 from core.erros import mensagem_segura
 from db import agora, conectar, registrar_evento
 
@@ -25,6 +27,44 @@ FONTE_ESTOQUE_FBA = "amazon_estoque_fba"
 FONTES = (FONTE, FONTE_ANUNCIOS, FONTE_ESTOQUE_FBA)
 # Primeira passada de pedidos: quantos dias para trás buscar.
 JANELA_INICIAL_DIAS = 30
+
+# Tudo o que vem da Amazon, para a exclusão do DPP (apagar_dados_amazon).
+TABELAS_AMAZON = ("amazon_itens", "amazon_pedidos", "amazon_anuncios")
+ALERTAS_DA_AMAZON = ("estoque_baixo", "sincronizacao_falhou", "conexao_vencida", "dado_velho")
+
+
+def apagar_dados_amazon(motivo: str) -> dict:
+    """Apaga tudo o que veio da Amazon: pedidos, itens, anúncios, o estado das
+    sincronizações, os alertas (que citam SKU) e o refresh token do cofre.
+
+    É a exclusão do Data Protection Policy da Amazon (1.7): até 30 dias depois
+    de o vendedor revogar a autorização, de a Amazon pedir ou de a
+    participação acabar. Com secure_delete o SQLite zera as páginas apagadas,
+    e o VACUUM refaz o arquivo sem elas. Uma linha no arquivo de eliminações
+    faz a restauração de um backup mais antigo apagar de novo
+    (core/backup.py). Devolve a contagem por tabela."""
+    motivo = " ".join((motivo or "").split())[:200] or "sem motivo informado"
+    contagem = {}
+    with conectar() as conn:
+        conn.execute("PRAGMA secure_delete = ON")
+        for tabela in TABELAS_AMAZON:
+            contagem[tabela] = conn.execute(f"DELETE FROM {tabela}").rowcount
+        contagem["sincronizacoes"] = conn.execute(
+            f"DELETE FROM sincronizacoes WHERE fonte IN ({', '.join('?' * len(FONTES))})",
+            FONTES).rowcount
+        contagem["alertas"] = conn.execute(
+            f"DELETE FROM alertas WHERE tipo IN ({', '.join('?' * len(ALERTAS_DA_AMAZON))})",
+            ALERTAS_DA_AMAZON).rowcount
+    contagem["refresh_token"] = int(cofre.apagar("amazon", "refresh_token"))
+    with conectar() as conn:
+        conn.execute("PRAGMA secure_delete = ON")
+        conn.execute("VACUUM")
+    marca = {"amazon_apagado_em": datetime.now(timezone.utc).isoformat(), "motivo": motivo}
+    with open(privacidade.ARQ_ELIMINACOES, "a", encoding="utf-8") as f:
+        f.write(json.dumps(marca, ensure_ascii=False) + "\n")
+    resumo = ", ".join(f"{k} {v}" for k, v in contagem.items())
+    registrar_evento("atencao", "amazon", f"Dados da Amazon apagados ({motivo}): {resumo}")
+    return {**contagem, "refresh_no_ambiente": bool(os.getenv("AMZ_REFRESH_TOKEN", "").strip())}
 
 
 def _iso_utc(momento: datetime) -> str:

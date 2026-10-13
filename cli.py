@@ -194,6 +194,26 @@ def cmd_operador(args):
           + f": {args.usuario}")
 
 
+def cmd_amazon(args):
+    """Dados da Amazon. apagar-dados é a exclusão do DPP da Amazon (1.7)."""
+    from core import sincronizacao
+
+    inicializar()
+    if not args.sim:
+        print("Isto apaga pedidos, itens, anúncios, alertas e o token da Amazon desta instância.")
+        if input("Digite APAGAR para confirmar: ").strip() != "APAGAR":
+            print("Nada foi apagado.")
+            sys.exit(1)
+    r = sincronizacao.apagar_dados_amazon(args.motivo)
+    print(f"Apagado: {r['amazon_pedidos']} pedido(s), {r['amazon_itens']} item(ns), "
+          f"{r['amazon_anuncios']} anúncio(s), {r['alertas']} alerta(s); "
+          f"token {'apagado' if r['refresh_token'] else 'não estava no cofre'}.")
+    if r["refresh_no_ambiente"]:
+        print("AMZ_REFRESH_TOKEN ainda está no ambiente ou no .env: apague essa linha à mão.")
+    print("Backups feitos antes disto ainda têm os dados. Restaurar um deles apaga de novo; "
+          "descarte os que não forem mais necessários.")
+
+
 def cmd_operadores(args):
     """Lista os operadores para a revisão de acessos. Sem hash nem segredo."""
     from core import seguranca
@@ -609,6 +629,14 @@ def main():
 
     ops = sub.add_parser("operadores", help="lista os operadores (revisão de acessos)")
     ops.set_defaults(func=cmd_operadores)
+
+    am = sub.add_parser("amazon", help="dados da Amazon")
+    acoes_am = am.add_subparsers(dest="acao", required=True)
+    apd = acoes_am.add_parser("apagar-dados", help="apaga pedidos, anúncios, alertas e o token "
+                              "da Amazon (até 30 dias depois da revogação)")
+    apd.add_argument("--motivo", required=True, help="por exemplo: revogado, pedido da Amazon, fim")
+    apd.add_argument("--sim", action="store_true", help="confirma sem perguntar")
+    am.set_defaults(func=cmd_amazon)
 
     co = sub.add_parser("cofre", help="cofre de credenciais")
     acoes = co.add_subparsers(dest="acao", required=True)
