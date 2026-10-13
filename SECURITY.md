@@ -28,6 +28,7 @@ an active operator has no second factor.
 | Area | Control | DPP |
 |---|---|---|
 | Accounts | One account per person, unique names; lock after 10 consecutive errors; 5 errors per address in 15 minutes → HTTP 429; deactivation ends sessions at once; `cli.py operadores` for the quarterly access review | 1.2.1, 1.2.2, 1.2.3 |
+| Least privilege | Roles: `admin` and read-only `leitura` (an allowlist of read routes; everything else is refused); new operators after the first start as `leitura` | 1.3 |
 | Authentication | TOTP second factor, required whenever the panel is exposed; passwords of 12+ characters with upper and lower case, digit and symbol, no part of the name, none of the last 10, changed at most daily, valid 365 days; scrypt hashes | 1.4.1 |
 | Sessions | 256-bit ids stored only as SHA-256; idle 30 minutes, maximum 8 hours; CSRF token in a header; `Secure` cookie and HSTS under HTTPS | 1.4.1, 1.5 |
 | Web | Content-Security-Policy, `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy`, `Cache-Control: no-store`; `Host` allowlist; login only as JSON; no API schema exposed | 1.1.1 |

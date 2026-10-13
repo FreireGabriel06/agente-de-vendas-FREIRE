@@ -89,7 +89,7 @@ def test_login_aceito_cria_sessao_com_cookie_protegido(cliente, operador):
 
     sessao = cliente.get("/api/sessao")
     assert sessao.status_code == 200
-    assert sessao.json() == {"usuario": USUARIO, "csrf": csrf}
+    assert sessao.json() == {"usuario": USUARIO, "csrf": csrf, "papel": "admin"}
     assert cliente.get("/api/pendencias").status_code == 200
     assert cliente.get("/").status_code == 200
 
