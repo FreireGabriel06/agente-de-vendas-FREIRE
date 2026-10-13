@@ -50,7 +50,7 @@ REM ---------- dependencias ----------
 if not exist ".venv\instalado.txt" (
   echo   Instalando dependencias ^(leva de 1 a 3 minutos^)...
   python -m pip install --quiet --upgrade pip
-  python -m pip install --quiet -r requirements.txt
+  python -m pip install --quiet -r requirements.txt -c constraints.txt
   if errorlevel 1 (
     echo   [X] Falha ao instalar dependencias.
     pause

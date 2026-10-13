@@ -1,0 +1,5 @@
+# Varredura de segredos do CI (.github/workflows/tests.yml, job "segredos").
+# Regras padrão do gitleaks. Exceção só para valor sintético conhecido, nunca
+# para uma pasta inteira.
+[extend]
+useDefault = true

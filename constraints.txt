@@ -1,0 +1,56 @@
+# Versões exatas do ambiente em que a suíte passa (Windows 11, Python 3.14),
+# usadas como restrição na instalação:
+#
+#     pip install -r requirements.txt -c constraints.txt
+#
+# Restrição só fixa a versão do que for instalado; não instala nada a mais.
+# Um pacote que só existe em outro sistema (uvloop no Linux, por exemplo) fica
+# sem trava. Para atualizar: subir a versão aqui, instalar, rodar a suíte e o
+# pip-audit do CI. Auditoria de 06/10/2026, achados S-26 e S-12.
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anthropic==1.11.0
+anyio==4.15.1
+certifi==2026.7.22
+cffi==2.1.1
+charset-normalizer==3.5.1
+click==8.5.0
+colorama==0.4.6
+cryptography==50.0.1
+docstring_parser==0.18.0
+fastapi==0.141.1
+h11==0.16.0
+httpcore2==2.13.1
+httpcore==1.0.9
+httptools==0.8.0
+httpx2==2.13.1
+httpx==0.28.1
+idna==3.19
+iniconfig==2.3.0
+jiter==0.17.0
+lxml==6.1.3
+numpy==2.5.3
+packaging==26.3
+pandas==3.0.5
+pluggy==1.6.0
+pycparser==3.0
+pydantic==2.13.5
+pydantic_core==2.46.5
+Pygments==2.21.0
+pytest==9.1.1
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.3
+pytrends==4.9.2
+PyYAML==6.0.3
+requests==2.34.2
+six==1.17.0
+sniffio==1.3.1
+starlette==1.6.0
+truststore==0.10.4
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+tzdata==2026.4
+urllib3==2.8.0
+uvicorn==0.52.4
+watchfiles==1.2.0
+websockets==17.1
