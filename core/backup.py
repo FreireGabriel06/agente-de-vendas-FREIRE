@@ -101,7 +101,10 @@ def criar(destino: Path, senha: str) -> Path:
         partes[".chave_lgpd"] = chave_lgpd
     if chave_cofre:
         partes[".chave_cofre"] = chave_cofre
+    # criado_em_exato (microssegundos) decide se uma exclusão da Amazon veio
+    # depois deste backup (_reaplicar).
     manifesto = {"versao": VERSAO, "criado_em": agora(),
+                 "criado_em_exato": datetime.now(timezone.utc).isoformat(),
                  "partes": {nome: _sha256(dados) for nome, dados in partes.items()}}
 
     pacote = io.BytesIO()
@@ -163,19 +166,33 @@ def verificar(arquivo: Path, senha: str) -> dict:
 
 
 def _reaplicar(banco: Path, chave_lgpd: bytes | None, retencao_dias: int,
-               eliminacoes: Path | None) -> dict:
-    """Expurgo por retenção e eliminações posteriores, direto no banco restaurado."""
+               eliminacoes: Path | None, criado_em: str | None = None) -> dict:
+    """Expurgo por retenção e eliminações posteriores, direto no banco
+    restaurado. Se os dados da Amazon foram apagados depois de o backup ser
+    feito, apaga de novo (DPP da Amazon, 1.7)."""
     corte = (datetime.now(timezone.utc) - timedelta(days=retencao_dias)).isoformat(timespec="seconds")
     pseudonimos = set()
+    amazon_apagado = None
     if eliminacoes and eliminacoes.exists():
         for linha in eliminacoes.read_text(encoding="utf-8").splitlines():
             try:
-                pseudonimos.add(json.loads(linha)["pseudonimo"])
-            except (ValueError, KeyError, TypeError):
+                registro = json.loads(linha)
+            except ValueError:
                 continue
-    expurgados = eliminados = 0
+            if not isinstance(registro, dict):
+                continue
+            if isinstance(registro.get("pseudonimo"), str):
+                pseudonimos.add(registro["pseudonimo"])
+            momento = _momento(registro.get("amazon_apagado_em"))
+            if momento is not None:
+                amazon_apagado = max(amazon_apagado or momento, momento)
+    expurgados = eliminados = amazon = 0
     conn = sqlite3.connect(banco)
     try:
+        feito = _momento(criado_em)
+        # No empate, apaga: é o lado seguro para a exclusão.
+        if amazon_apagado and (feito is None or feito <= amazon_apagado):
+            amazon = _apagar_amazon_restaurado(conn)
         cur = conn.execute("UPDATE pedidos SET comprador_nome = NULL, comprador_id = NULL,"
                            " endereco_json = '{}' WHERE criado_em < ? AND comprador_nome IS NOT NULL",
                            (corte,))
@@ -196,7 +213,42 @@ def _reaplicar(banco: Path, chave_lgpd: bytes | None, retencao_dias: int,
         conn.commit()
     finally:
         conn.close()
-    return {"expurgados": expurgados, "eliminados": eliminados}
+    if amazon:
+        conn = sqlite3.connect(banco)
+        try:
+            conn.execute("VACUUM")
+        finally:
+            conn.close()
+    return {"expurgados": expurgados, "eliminados": eliminados, "amazon_apagados": amazon}
+
+
+def _momento(texto) -> datetime | None:
+    try:
+        momento = datetime.fromisoformat(texto)
+    except (TypeError, ValueError):
+        return None
+    return momento if momento.tzinfo else momento.replace(tzinfo=timezone.utc)
+
+
+def _apagar_amazon_restaurado(conn) -> int:
+    """As mesmas tabelas de core/sincronizacao.apagar_dados_amazon, no banco
+    restaurado. Banco antigo sem alguma delas: pula."""
+    from core import sincronizacao
+    conn.execute("PRAGMA secure_delete = ON")
+    total = 0
+    comandos = [(f"DELETE FROM {t}", ()) for t in sincronizacao.TABELAS_AMAZON] + [
+        (f"DELETE FROM sincronizacoes WHERE fonte IN ({', '.join('?' * len(sincronizacao.FONTES))})",
+         sincronizacao.FONTES),
+        (f"DELETE FROM alertas WHERE tipo IN ({', '.join('?' * len(sincronizacao.ALERTAS_DA_AMAZON))})",
+         sincronizacao.ALERTAS_DA_AMAZON),
+        ("DELETE FROM credenciais WHERE provedor = 'amazon' AND nome = 'refresh_token'", ()),
+    ]
+    for sql, parametros in comandos:
+        try:
+            total += conn.execute(sql, parametros).rowcount
+        except sqlite3.OperationalError:
+            continue
+    return total
 
 
 def restaurar(arquivo: Path, senha: str, pasta: Path, eliminacoes: Path | None = None) -> dict:
@@ -216,5 +268,6 @@ def restaurar(arquivo: Path, senha: str, pasta: Path, eliminacoes: Path | None =
             pass
     reaplicado = _reaplicar(pasta / "agente.db", partes.get(".chave_lgpd"),
                             privacidade.RETENCAO_DIAS,
-                            eliminacoes if eliminacoes is not None else privacidade.ARQ_ELIMINACOES)
+                            eliminacoes if eliminacoes is not None else privacidade.ARQ_ELIMINACOES,
+                            manifesto.get("criado_em_exato") or manifesto.get("criado_em"))
     return {"criado_em": manifesto["criado_em"], "partes": sorted(partes), **reaplicado}
