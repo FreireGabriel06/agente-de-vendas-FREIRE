@@ -33,6 +33,7 @@ import base64
 import hashlib
 import hmac
 import os
+import re
 import secrets
 import struct
 import threading
@@ -53,6 +54,15 @@ CREATE TABLE IF NOT EXISTS operadores (
     bloqueado_ate TEXT
 );
 
+-- Senhas anteriores de cada operador, só o hash: nenhuma das últimas
+-- SENHA_HISTORICO volta (DPP da Amazon, 1.4.1).
+CREATE TABLE IF NOT EXISTS senhas_anteriores (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    operador_id INTEGER NOT NULL REFERENCES operadores(id),
+    senha_hash  TEXT NOT NULL,
+    trocada_em  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sessoes (
     id          TEXT PRIMARY KEY,
     operador_id INTEGER NOT NULL REFERENCES operadores(id),
@@ -71,12 +81,22 @@ SCRYPT_MAXMEM = 300 * 1024 * 1024   # 128 * N * r cabe aqui com folga
 SENHA_MINIMA = 12
 OCIOSIDADE_MIN = int(os.getenv("SESSAO_OCIOSA_MIN", "30"))
 DURACAO_MAX_H = int(os.getenv("SESSAO_MAX_HORAS", "8"))
-TENTATIVAS_ATE_BLOQUEIO = 20   # erros seguidos na conta, de qualquer endereço
+TENTATIVAS_ATE_BLOQUEIO = 10   # erros seguidos na conta, de qualquer endereço (DPP: até 10)
 BLOQUEIO_MIN = 15
 FALHAS_POR_IP = 5              # erros de um endereço dentro da janela abaixo
 JANELA_IP_MIN = 15
 IPS_VIGIADOS_MAX = 10_000      # teto da memória do limite por endereço
 VERIFICACOES_SIMULTANEAS = 2   # scrypt ao mesmo tempo (~134 MB cada)
+
+# Regra de senha do Data Protection Policy da Amazon (1.4.1), exigida no
+# cadastro de desenvolvedor da SP-API: 12 caracteres, maiúscula, minúscula,
+# número e símbolo, nada do nome do operador, nenhuma das últimas 10, troca
+# no máximo uma vez por dia e validade de 365 dias. Lote S8.
+SENHA_HISTORICO = 10
+SENHA_IDADE_MINIMA_H = 24
+SENHA_VALIDADE_DIAS = 365
+VALORES_SIM = ("1", "true", "sim", "yes")
+HOSTS_LOCAIS = ("127.0.0.1", "localhost", "::1")
 
 COOKIE_SESSAO = "agente_sessao"
 
@@ -104,6 +124,8 @@ COLUNAS_OPERADORES = {
     "ativo": "INTEGER NOT NULL DEFAULT 1",
     "totp_ativo": "INTEGER NOT NULL DEFAULT 0",
     "totp_ultimo_passo": "INTEGER",
+    "senha_trocada_em": "TEXT",
+    "ultimo_login_em": "TEXT",
 }
 
 
@@ -117,6 +139,58 @@ def inicializar_seguranca():
         # Sessões de antes do lote S5 guardavam o id em claro; nenhuma delas
         # confere com o hash, então só ocupariam espaço até vencer.
         conn.execute("DELETE FROM sessoes WHERE length(id) != 64")
+        # Operador de antes do lote S8: a validade da senha conta da última
+        # alteração conhecida.
+        conn.execute("UPDATE operadores SET senha_trocada_em = COALESCE(atualizado_em, criado_em)"
+                     " WHERE senha_trocada_em IS NULL")
+
+
+class SenhaVencida(FalhaLogin):
+    """Senha certa, mas com mais de SENHA_VALIDADE_DIAS dias."""
+
+
+def painel_exposto() -> bool:
+    """O painel escuta fora do endereço local (HOST_PAINEL)."""
+    return os.getenv("HOST_PAINEL", "127.0.0.1").strip().lower() not in HOSTS_LOCAIS
+
+
+def mfa_obrigatorio() -> bool:
+    """MFA para todo operador (DPP 1.4.1): sempre que o painel está exposto,
+    ou quando MFA_OBRIGATORIO=true também no endereço local."""
+    return painel_exposto() or os.getenv("MFA_OBRIGATORIO", "").strip().lower() in VALORES_SIM
+
+
+def operadores_sem_mfa() -> list[str]:
+    with conectar() as conn:
+        return [l["usuario"] for l in conn.execute(
+            "SELECT usuario FROM operadores WHERE ativo = 1 AND totp_ativo = 0 ORDER BY usuario")]
+
+
+def listar_operadores() -> list[dict]:
+    """Para a revisão de acessos (DPP 1.2.2: trimestral). Sem hash nem segredo."""
+    with conectar() as conn:
+        return [dict(l) for l in conn.execute(
+            "SELECT usuario, ativo, totp_ativo, ultimo_login_em, senha_trocada_em,"
+            " bloqueado_ate, criado_em FROM operadores ORDER BY usuario")]
+
+
+def problema_na_senha(usuario: str, senha: str) -> str | None:
+    """O motivo de recusar a senha nova, ou None."""
+    senha = senha or ""
+    if len(senha) < SENHA_MINIMA:
+        return f"A senha precisa de pelo menos {SENHA_MINIMA} caracteres."
+    faltam = [nome for nome, tem in (
+        ("letra maiúscula", any(c.isupper() for c in senha)),
+        ("letra minúscula", any(c.islower() for c in senha)),
+        ("número", any(c.isdigit() for c in senha)),
+        ("símbolo", any(not c.isalnum() and not c.isspace() for c in senha)),
+    ) if not tem]
+    if faltam:
+        return "A senha precisa de pelo menos: " + ", ".join(faltam) + "."
+    partes = [p for p in re.split(r"[^0-9a-z]+", (usuario or "").lower()) if len(p) >= 3]
+    if any(p in senha.lower() for p in partes):
+        return "A senha não pode conter parte do nome do operador."
+    return None
 
 
 # --------------------------------------------------------------------- TOTP
@@ -258,26 +332,52 @@ def conferir_hash(senha: str, guardado: str) -> bool:
 
 # --------------------------------------------------------------- Operadores
 
-def definir_operador(usuario: str, senha: str) -> str:
-    """Cria o operador ou troca a senha dele. Chamado pela CLI, nunca pela web."""
+def definir_operador(usuario: str, senha: str, troca_imediata: bool = False) -> str:
+    """Cria o operador ou troca a senha dele. Chamado pela CLI, nunca pela web.
+    troca_imediata dispensa a idade mínima de 24 h: é para senha que vazou."""
     usuario = (usuario or "").strip().lower()
     if not usuario:
         raise FalhaLogin("Informe o nome do operador.")
+    problema = problema_na_senha(usuario, senha)
+    if problema:
+        raise FalhaLogin(problema)
+    with conectar() as conn:
+        atual = conn.execute("SELECT id, senha_hash, senha_trocada_em FROM operadores"
+                             " WHERE usuario = ?", (usuario,)).fetchone()
+        anteriores = [] if atual is None else [atual["senha_hash"]] + [
+            l["senha_hash"] for l in conn.execute(
+                "SELECT senha_hash FROM senhas_anteriores WHERE operador_id = ?"
+                " ORDER BY id DESC LIMIT ?", (atual["id"], SENHA_HISTORICO - 1))]
+    if atual is not None and not troca_imediata and atual["senha_trocada_em"]:
+        if _quando(atual["senha_trocada_em"]) + timedelta(hours=SENHA_IDADE_MINIMA_H) \
+                > datetime.now(timezone.utc):
+            raise FalhaLogin(f"A senha foi trocada há menos de {SENHA_IDADE_MINIMA_H} horas. Se ela "
+                             "vazou, troque com --suspeita-de-vazamento.")
+    if any(conferir_hash(senha, h) for h in anteriores):
+        raise FalhaLogin(f"Esta senha já foi usada. Escolha uma diferente das últimas "
+                         f"{SENHA_HISTORICO}.")
     senha_hash = gerar_hash(senha)
     with conectar() as conn:
-        atual = conn.execute("SELECT id FROM operadores WHERE usuario = ?", (usuario,)).fetchone()
         if atual:
+            conn.execute("INSERT INTO senhas_anteriores (operador_id, senha_hash, trocada_em)"
+                         " VALUES (?,?,?)", (atual["id"], atual["senha_hash"], agora()))
+            conn.execute("DELETE FROM senhas_anteriores WHERE operador_id = ? AND id NOT IN"
+                         " (SELECT id FROM senhas_anteriores WHERE operador_id = ?"
+                         " ORDER BY id DESC LIMIT ?)",
+                         (atual["id"], atual["id"], SENHA_HISTORICO - 1))
             conn.execute(
-                "UPDATE operadores SET senha_hash = ?, atualizado_em = ?, tentativas = 0,"
-                " bloqueado_ate = NULL WHERE id = ?", (senha_hash, agora(), atual["id"]))
+                "UPDATE operadores SET senha_hash = ?, atualizado_em = ?, senha_trocada_em = ?,"
+                " tentativas = 0, bloqueado_ate = NULL WHERE id = ?",
+                (senha_hash, agora(), agora(), atual["id"]))
             conn.execute("DELETE FROM sessoes WHERE operador_id = ?", (atual["id"],))
-            acao = "senha trocada"
+            acao = "senha trocada" + (" (suspeita de vazamento)" if troca_imediata else "")
         else:
             conn.execute(
-                "INSERT INTO operadores (usuario, senha_hash, criado_em, atualizado_em)"
-                " VALUES (?,?,?,?)", (usuario, senha_hash, agora(), agora()))
+                "INSERT INTO operadores (usuario, senha_hash, criado_em, atualizado_em,"
+                " senha_trocada_em) VALUES (?,?,?,?,?)",
+                (usuario, senha_hash, agora(), agora(), agora()))
             acao = "operador criado"
-    registrar_evento("info", "seguranca", f"{acao}: {usuario}")
+    registrar_evento("atencao" if troca_imediata else "info", "seguranca", f"{acao}: {usuario}")
     return acao
 
 
@@ -421,6 +521,17 @@ def autenticar(usuario: str, senha: str, codigo: str | None = None,
         _anotar_falha_do_ip(ip)
         raise FalhaLogin("Usuário ou senha inválidos.")
 
+    # Senha certa, conta ativa: as duas recusas abaixo não contam como erro.
+    if op["senha_trocada_em"] and _quando(op["senha_trocada_em"]) \
+            + timedelta(days=SENHA_VALIDADE_DIAS) <= momento:
+        registrar_evento("atencao", "seguranca", f"Login recusado: senha vencida ({usuario})")
+        raise SenhaVencida(f"Senha vencida (mais de {SENHA_VALIDADE_DIAS} dias). Troque com: "
+                           f"python cli.py operador --usuario {usuario}")
+    if not op["totp_ativo"] and mfa_obrigatorio():
+        registrar_evento("atencao", "seguranca", f"Login recusado: operador sem MFA ({usuario})")
+        raise FalhaLogin("Este painel exige o código do app autenticador. Ative com: "
+                         f"python cli.py operador --usuario {usuario} --mfa-ativar")
+
     passo = None
     if op["totp_ativo"]:
         if not (codigo or "").strip():
@@ -447,8 +558,8 @@ def autenticar(usuario: str, senha: str, codigo: str | None = None,
                 (passo, op["id"], passo)).rowcount
             if not gravado:
                 raise FalhaLogin("Código do autenticador inválido ou já usado.")
-        conn.execute("UPDATE operadores SET tentativas = 0, bloqueado_ate = NULL WHERE id = ?",
-                     (op["id"],))
+        conn.execute("UPDATE operadores SET tentativas = 0, bloqueado_ate = NULL,"
+                     " ultimo_login_em = ? WHERE id = ?", (inicio, op["id"]))
         conn.execute("DELETE FROM sessoes WHERE expira_em <= ?", (inicio,))
         conn.execute("INSERT INTO sessoes (id, operador_id, csrf, criada_em, ultimo_uso, expira_em)"
                      " VALUES (?,?,?,?,?,?)",

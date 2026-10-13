@@ -110,7 +110,8 @@ What the automated suite covers, and how to run it, is under [Tests](#tests).
 | Marketplace errors without the response body or the full URL: the message keeps the method, the path without its query, the HTTP status and the marketplace's error code when it looks like one; a network failure keeps only the exception type (the Shopee URL carries the access token). The approval queue, events and the panel's HTTP 500 show only messages written by the project; any other exception shows only its type, with the stack trace (no message) in the event | `core/erros.py`, `conectores/`, `core/aprovacao.py`, `painel/app.py` | Tested with fake marketplaces |
 | Second factor by authenticator app (TOTP, RFC 6238, standard library only): secret in the encrypted vault, a code works once, a wrong code counts toward the lockout; operator deactivation ends every session at once — see [Panel security](#panel-security) | `core/seguranca.py`, `cli.py`, `painel/app.py` | Tested |
 | HTTPS: the panel serves TLS itself (`TLS_CERT`, `TLS_CHAVE`) or trusts `X-Forwarded-Proto` only from a reverse proxy (`PROXY_HTTPS`, `PROXY_IPS`); it refuses to start on a non-local address without one of them; `Secure` session cookie and HSTS under HTTPS; `nosniff`, `X-Frame-Options: DENY` and `Referrer-Policy` on every response | `executar.py`, `painel/app.py` | Tested |
-| Panel exposed to a network: login limited per address (5 errors in 15 minutes → HTTP 429) and per account (20 consecutive errors → 15-minute lock), so one attacker cannot lock the operator out; an unknown operator costs the same password check as a wrong password; session id stored only as SHA-256; `Host` must be local or listed in `HOSTS_PAINEL`; Content-Security-Policy and `Cache-Control: no-store` on every response; login only as JSON; no OpenAPI schema; numeric inputs checked with ranges — see [Panel security](#panel-security) | `core/seguranca.py`, `painel/app.py`, `executar.py` | Tested |
+| Accounts and passwords by the Amazon Data Protection Policy (1.2.2, 1.4.1): MFA required whenever the panel listens beyond loopback (or with `MFA_OBRIGATORIO=true`), the panel refuses to start exposed while an active operator lacks it; passwords of 12+ characters with upper and lower case, a digit and a symbol, no part of the operator name, none of the last 10, changed at most once a day (unless leaked) and valid for 365 days; `cli.py operadores` lists operators, MFA, last login and password age for the access review | `core/seguranca.py`, `cli.py`, `executar.py` | Tested |
+| Panel exposed to a network: login limited per address (5 errors in 15 minutes → HTTP 429) and per account (10 consecutive errors → 15-minute lock), so one attacker cannot lock the operator out; an unknown operator costs the same password check as a wrong password; session id stored only as SHA-256; `Host` must be local or listed in `HOSTS_PAINEL`; Content-Security-Policy and `Cache-Control: no-store` on every response; login only as JSON; no OpenAPI schema; numeric inputs checked with ranges — see [Panel security](#panel-security) | `core/seguranca.py`, `painel/app.py`, `executar.py` | Tested |
 | OAuth return: `state` created by the same panel session, single use, valid for 10 minutes; return pages escape their output and show fixed error messages | `core/seguranca.py`, `painel/app.py`, `painel/configurar.py` | Tested with a fake token endpoint |
 | Data folder for `.env`, database, keys, legacy token files and purchase orders: `AGENTE_DADOS`, the executable's folder, or the project folder | `config.py` | Tested |
 | Panel port and worker interval from `.env` or the environment (`PORTA_PAINEL`, `INTERVALO_WORKER`); a non-numeric or out-of-range value falls back to the default with a warning | `config.py`, `executar.py`, `worker.py` | Tested |
@@ -777,6 +778,7 @@ Reply drafts use the official `anthropic` Python SDK
 | `TLS_CERT`, `TLS_CHAVE` | empty | Certificate and private key files (PEM): the panel serves HTTPS itself. Set both or neither |
 | `PROXY_HTTPS`, `PROXY_IPS` | `false`, `127.0.0.1` | A reverse proxy in front does HTTPS; the panel trusts `X-Forwarded-Proto` only from these addresses |
 | `HOSTS_PAINEL` | empty | Comma-separated names (or IPs) the panel answers to besides `127.0.0.1`, `localhost` and `::1`; required off loopback |
+| `MFA_OBRIGATORIO` | `false` | Require the authenticator code for every operator on loopback too; off loopback it is always required |
 | `SESSAO_OCIOSA_MIN`, `SESSAO_MAX_HORAS` | `30`, `8` | Idle timeout and maximum session lifetime |
 | `WORKER_ATIVO`, `ABRIR_NAVEGADOR` | `true` | Start the worker; open the browser |
 | `ESTOQUE_MINIMO`, `ALERTA_DADO_VELHO_HORAS` | `3`, `6` | Alerts: available stock at or below this opens "low stock"; data without a successful sync for longer than this many hours opens "stale data" |
@@ -868,8 +870,25 @@ python cli.py operador --usuario your_user --mfa-desativar
 The key is stored only in the encrypted vault. Turning MFA on ends the open
 sessions. The login screen asks for the code after the password; a code
 works once, and a wrong code counts toward the same lockout as a wrong
-password. Losing the phone: run `--mfa-desativar` on the machine and turn it
-on again.
+password. Losing the phone: run `--mfa-ativar` again on the machine; it
+replaces the key.
+
+MFA is required whenever `HOST_PAINEL` leaves loopback, and on loopback too
+with `MFA_OBRIGATORIO=true`; an exposed panel refuses to start while an active
+operator has no MFA, and such an operator cannot log in. This and the
+password rules below follow the Amazon Data Protection Policy, which Amazon
+checks before approving a public SP-API developer.
+
+Passwords need 12 or more characters with upper and lower case letters, a
+digit and a symbol, and no part of the operator name. None of the last 10
+passwords comes back. A password can be changed once a day; if it leaked,
+change it at once with `--suspeita-de-vazamento` (recorded as a warning
+event). After 365 days the login asks for a new one. Existing passwords are
+checked against the rules on their next change.
+
+```bash
+python cli.py operadores     # operators, MFA, last login and password age, for the access review
+```
 
 Deactivating an operator ends its sessions immediately and refuses its login
 with the same message as a wrong password; `--reativar` undoes it:
@@ -888,7 +907,7 @@ request with any other `Host` gets HTTP 400.
 
 Wrong logins are limited twice. Five errors from one address within 15
 minutes make that address wait (HTTP 429 with `Retry-After`), whatever the
-operator name. Twenty consecutive errors on one account, from any address,
+operator name. Ten consecutive errors on one account, from any address,
 lock that account for 15 minutes. Behind a proxy the address comes from
 `X-Forwarded-For`, trusted only from `PROXY_IPS`; with a misconfigured proxy
 every client shares the proxy's address and one attacker slows everyone.
@@ -947,7 +966,7 @@ Sheet and the cryptography and secret-management chapters of OWASP ASVS 5.0.
 
 ## Known limitations
 
-- One operator account and no roles: whoever logs in can do everything. MFA is optional and off until you turn it on.
+- No roles: every operator can do everything. Create one account per person; shared accounts break the access review.
 - Mercado Livre drives the purchase flow. Amazon orders are synced read-only for monitoring and never enter the purchase flow (Amazon forbids a third party as the sender); the panel screen does not list them yet (the API does). Shopee stops at the connection test.
 - Connecting sellers other than yourself on Amazon needs a public developer registration and an app approved by Amazon; that review is outside this project's control.
 - Backups are manual (or scheduled by you with `BACKUP_SENHA`); nothing copies them off the machine. A restore reapplies only the deletions recorded in the eliminations file it is given.

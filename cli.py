@@ -185,11 +185,32 @@ def cmd_operador(args):
         seguranca.definir_ativo(args.usuario, ativo=bool(args.reativar))
         print(f"Operador {args.usuario} {'reativado' if args.reativar else 'desativado; sessões encerradas'}.")
         return
-    senha = getpass.getpass(f"Senha (mínimo {seguranca.SENHA_MINIMA} caracteres): ")
+    senha = getpass.getpass(f"Senha (mínimo {seguranca.SENHA_MINIMA} caracteres, com maiúscula, "
+                            "minúscula, número e símbolo, sem o nome do operador): ")
     if senha != getpass.getpass("Repita a senha: "):
         print("As senhas não conferem.")
         sys.exit(1)
-    print(seguranca.definir_operador(args.usuario, senha) + f": {args.usuario}")
+    print(seguranca.definir_operador(args.usuario, senha, troca_imediata=args.suspeita_de_vazamento)
+          + f": {args.usuario}")
+
+
+def cmd_operadores(args):
+    """Lista os operadores para a revisão de acessos. Sem hash nem segredo."""
+    from core import seguranca
+
+    inicializar()
+    seguranca.inicializar_seguranca()
+    linhas = seguranca.listar_operadores()
+    if not linhas:
+        print("Nenhum operador cadastrado.")
+        return
+    print(f"{'operador':20} {'ativo':6} {'MFA':4} {'último login':26} {'senha trocada em':26} bloqueado até")
+    for o in linhas:
+        print(f"{o['usuario']:20} {'sim' if o['ativo'] else 'não':6} "
+              f"{'sim' if o['totp_ativo'] else 'não':4} {o['ultimo_login_em'] or '—':26} "
+              f"{o['senha_trocada_em'] or '—':26} {o['bloqueado_ate'] or '—'}")
+    if seguranca.mfa_obrigatorio() and seguranca.operadores_sem_mfa():
+        print("Atenção: este painel exige MFA e há operador ativo sem ele.")
 
 
 def _nomes(itens) -> str:
@@ -582,7 +603,12 @@ def main():
     acao_op.add_argument("--mfa-desativar", action="store_true", help="desliga o MFA")
     acao_op.add_argument("--desativar", action="store_true", help="bloqueia o operador e encerra as sessões")
     acao_op.add_argument("--reativar", action="store_true", help="desfaz o --desativar")
+    op.add_argument("--suspeita-de-vazamento", action="store_true",
+                    help="troca a senha antes de 24 h da última troca (senha vazada)")
     op.set_defaults(func=cmd_operador)
+
+    ops = sub.add_parser("operadores", help="lista os operadores (revisão de acessos)")
+    ops.set_defaults(func=cmd_operadores)
 
     co = sub.add_parser("cofre", help="cofre de credenciais")
     acoes = co.add_subparsers(dest="acao", required=True)

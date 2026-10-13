@@ -7,7 +7,7 @@ import types
 from pathlib import Path
 
 USUARIO = "operador.teste"
-SENHA = "senha-de-teste-12345"
+SENHA = "Cavalo-Bateria-27!"
 
 COMPRADOR = {"id": 424242, "first_name": "Comprador", "last_name": "Sintetico"}
 
