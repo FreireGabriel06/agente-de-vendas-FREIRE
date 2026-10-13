@@ -74,6 +74,22 @@ async def exigir_sessao(request: Request, call_next):
     return await call_next(request)
 
 
+# Declarado depois de exigir_sessao para ficar por fora dele (o último
+# middleware declarado roda primeiro): assim o 401 e o redirecionamento para
+# o login também levam os cabeçalhos.
+@app.middleware("http")
+async def cabecalhos_de_seguranca(request: Request, call_next):
+    """Cabeçalhos em toda resposta (lote S4): sem farejar tipo, sem moldura de
+    outro site, Referer só para a mesma origem (rotas da Amazon pedem
+    no-referrer e já o definem) e, sob HTTPS, HSTS."""
+    resposta = await call_next(request)
+    resposta.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resposta.headers.setdefault("X-Frame-Options", "DENY")
+    resposta.headers.setdefault("Referrer-Policy", "same-origin")
+    if request.url.scheme == "https":
+        resposta.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
+    return resposta
+
 
 # ------------------------------------------------------------------ Dados
 
@@ -657,7 +673,10 @@ def pagina_login():
 async def api_login(request: Request):
     corpo = await request.json()
     try:
-        sid, csrf = seguranca.autenticar(corpo.get("usuario", ""), corpo.get("senha", ""))
+        sid, csrf = seguranca.autenticar(corpo.get("usuario", ""), corpo.get("senha", ""),
+                                         corpo.get("codigo"))
+    except seguranca.PrecisaCodigo as e:
+        return JSONResponse({"detail": str(e), "mfa": True}, status_code=401)
     except seguranca.FalhaLogin as e:
         return JSONResponse({"detail": str(e)}, status_code=401)
     resposta = JSONResponse({"ok": True, "csrf": csrf})
@@ -699,6 +718,7 @@ def _pagina_login() -> str:
         color:#EDF0EC;cursor:pointer;font-weight:600}
  .erro{margin:0;color:#8C2F1B;font-size:.88rem;min-height:1.2em}
  input:focus-visible,button:focus-visible{outline:2px solid #14614A;outline-offset:2px}
+ [hidden]{display:none}
 </style></head><body>
 <form id="entrar">
   <h1>Agente Comercial</h1>
@@ -706,6 +726,8 @@ def _pagina_login() -> str:
     <input id="usuario" autocomplete="username" autofocus required></label>
   <label>Senha
     <input id="senha" type="password" autocomplete="current-password" required></label>
+  <label id="campo-codigo" hidden>Código do app autenticador
+    <input id="codigo" inputmode="numeric" autocomplete="one-time-code" maxlength="6"></label>
   <button type="submit">Entrar</button>
   <p class="erro" id="erro" role="alert"></p>
 </form>
@@ -715,9 +737,12 @@ document.getElementById('entrar').onsubmit = async ev => {
   const r = await fetch('/api/login', {method:'POST',
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({usuario: document.getElementById('usuario').value,
-                          senha: document.getElementById('senha').value})});
+                          senha: document.getElementById('senha').value,
+                          codigo: document.getElementById('codigo').value || null})});
   if (r.ok) { window.location = '/'; return; }
   const d = await r.json().catch(() => ({detail:'Não deu para entrar.'}));
+  if (d.mfa) { document.getElementById('campo-codigo').hidden = false;
+               document.getElementById('codigo').focus(); }
   document.getElementById('erro').textContent = d.detail || 'Não deu para entrar.';
 };
 </script></body></html>"""

@@ -160,12 +160,31 @@ def cmd_rodar(args):
 
 
 def cmd_operador(args):
-    """Cria o operador do painel ou troca a senha. A senha nunca vem por argumento."""
+    """Cria o operador do painel ou troca a senha (sem opção), liga ou desliga o
+    MFA, desativa ou reativa. A senha nunca vem por argumento."""
     import getpass
     from core import seguranca
 
     inicializar()
     seguranca.inicializar_seguranca()
+    if args.mfa_ativar:
+        segredo = seguranca.novo_segredo_totp()
+        print("Cadastre no app autenticador (Google Authenticator, Aegis, 1Password...):")
+        print(f"  {seguranca.uri_totp(args.usuario.strip().lower(), segredo)}")
+        print(f"  ou digite a chave: {segredo}")
+        print("Esta chave aparece só agora e não fica em arquivo nenhum além do cofre.")
+        codigo = input("Código de 6 dígitos que o app mostra agora: ")
+        seguranca.ativar_mfa(args.usuario, segredo, codigo)
+        print(f"MFA ligado para {args.usuario}. As sessões abertas foram encerradas.")
+        return
+    if args.mfa_desativar:
+        seguranca.desativar_mfa(args.usuario)
+        print(f"MFA desligado para {args.usuario}.")
+        return
+    if args.desativar or args.reativar:
+        seguranca.definir_ativo(args.usuario, ativo=bool(args.reativar))
+        print(f"Operador {args.usuario} {'reativado' if args.reativar else 'desativado; sessões encerradas'}.")
+        return
     senha = getpass.getpass(f"Senha (mínimo {seguranca.SENHA_MINIMA} caracteres): ")
     if senha != getpass.getpass("Repita a senha: "):
         print("As senhas não conferem.")
@@ -556,7 +575,13 @@ def main():
     ro = sub.add_parser("rodar"); ro.add_argument("--intervalo", type=int, default=None); ro.set_defaults(func=cmd_rodar)
     ev = sub.add_parser("eventos"); ev.add_argument("-n", type=int, default=25); ev.set_defaults(func=cmd_eventos)
 
-    op = sub.add_parser("operador"); op.add_argument("--usuario", required=True)
+    op = sub.add_parser("operador", help="cria o operador ou troca a senha; MFA; desativar")
+    op.add_argument("--usuario", required=True)
+    acao_op = op.add_mutually_exclusive_group()
+    acao_op.add_argument("--mfa-ativar", action="store_true", help="liga o código do app autenticador (TOTP)")
+    acao_op.add_argument("--mfa-desativar", action="store_true", help="desliga o MFA")
+    acao_op.add_argument("--desativar", action="store_true", help="bloqueia o operador e encerra as sessões")
+    acao_op.add_argument("--reativar", action="store_true", help="desfaz o --desativar")
     op.set_defaults(func=cmd_operador)
 
     co = sub.add_parser("cofre", help="cofre de credenciais")

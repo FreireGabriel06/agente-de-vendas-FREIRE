@@ -32,9 +32,11 @@ import hashlib
 import hmac
 import os
 import secrets
+import struct
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 
 from db import agora, conectar, registrar_evento
 
@@ -77,9 +79,136 @@ class FalhaLogin(Exception):
     """Credencial inválida, operador bloqueado ou senha fraca."""
 
 
+class PrecisaCodigo(FalhaLogin):
+    """Senha certa, falta o código do autenticador (MFA ligado)."""
+
+
+# Colunas que entraram depois (lote S4). Banco antigo recebe cada uma, uma vez.
+COLUNAS_OPERADORES = {
+    "ativo": "INTEGER NOT NULL DEFAULT 1",
+    "totp_ativo": "INTEGER NOT NULL DEFAULT 0",
+    "totp_ultimo_passo": "INTEGER",
+}
+
+
 def inicializar_seguranca():
     with conectar() as conn:
         conn.executescript(SCHEMA_SEGURANCA)
+        existentes = {l["name"] for l in conn.execute("PRAGMA table_info(operadores)")}
+        for nome, tipo in COLUNAS_OPERADORES.items():
+            if nome not in existentes:
+                conn.execute(f"ALTER TABLE operadores ADD COLUMN {nome} {tipo}")
+
+
+# --------------------------------------------------------------------- TOTP
+#
+# Segundo fator por app autenticador (TOTP, RFC 6238: HMAC-SHA1, 6 dígitos,
+# passo de 30 s), com a biblioteca padrão. Aceita o passo atual e um vizinho
+# de cada lado (relógio do celular um pouco fora), e nunca o mesmo passo duas
+# vezes (o código não serve de novo). O segredo fica no cofre de credenciais,
+# cifrado. Lote S4; achado S-17 da auditoria; OWASP ASVS 5.0, capítulo 6;
+# NIST SP 800-63B-4 (autenticador OTP).
+
+TOTP_PASSO_S = 30
+TOTP_DIGITOS = 6
+TOTP_JANELA = 1
+
+
+def novo_segredo_totp() -> str:
+    return base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
+
+
+def _chave_totp(segredo: str) -> bytes:
+    texto = segredo.strip().replace(" ", "").upper()
+    return base64.b32decode(texto + "=" * (-len(texto) % 8))
+
+
+def codigo_totp(segredo: str, passo: int) -> str:
+    digest = hmac.new(_chave_totp(segredo), struct.pack(">Q", passo), hashlib.sha1).digest()
+    deslocamento = digest[-1] & 0x0F
+    numero = struct.unpack(">I", digest[deslocamento:deslocamento + 4])[0] & 0x7FFFFFFF
+    return str(numero % (10 ** TOTP_DIGITOS)).zfill(TOTP_DIGITOS)
+
+
+def passo_totp(instante: float | None = None) -> int:
+    return int((time.time() if instante is None else instante) // TOTP_PASSO_S)
+
+
+def conferir_totp(segredo: str, codigo: str, ultimo_passo: int | None,
+                  instante: float | None = None) -> int | None:
+    """O passo que o código prova, ou None. Recusa passo já usado."""
+    codigo = (codigo or "").strip().replace(" ", "")
+    if len(codigo) != TOTP_DIGITOS or not codigo.isdigit():
+        return None
+    atual = passo_totp(instante)
+    for passo in range(atual - TOTP_JANELA, atual + TOTP_JANELA + 1):
+        if ultimo_passo is not None and passo <= ultimo_passo:
+            continue
+        if hmac.compare_digest(codigo_totp(segredo, passo), codigo):
+            return passo
+    return None
+
+
+def uri_totp(usuario: str, segredo: str, emissor: str = "Agente Comercial") -> str:
+    """otpauth:// para o app autenticador (QR ou digitado)."""
+    return (f"otpauth://totp/{quote(emissor)}:{quote(usuario)}?secret={segredo}"
+            f"&issuer={quote(emissor)}&digits={TOTP_DIGITOS}&period={TOTP_PASSO_S}")
+
+
+def _cofre():
+    from core import cofre
+    return cofre
+
+
+def ativar_mfa(usuario: str, segredo: str, codigo: str) -> None:
+    """Liga o MFA depois de conferir um código do app (prova que o operador
+    cadastrou o segredo certo). Derruba as sessões abertas."""
+    usuario = (usuario or "").strip().lower()
+    with conectar() as conn:
+        op = conn.execute("SELECT id FROM operadores WHERE usuario = ?", (usuario,)).fetchone()
+    if op is None:
+        raise FalhaLogin("Operador não encontrado.")
+    passo = conferir_totp(segredo, codigo, None)
+    if passo is None:
+        raise FalhaLogin("Código do autenticador não confere. Confira a hora do celular e tente de novo.")
+    _cofre().guardar("operador", f"totp:{usuario}", segredo)
+    with conectar() as conn:
+        conn.execute("UPDATE operadores SET totp_ativo = 1, totp_ultimo_passo = ?, atualizado_em = ?"
+                     " WHERE id = ?", (passo, agora(), op["id"]))
+        conn.execute("DELETE FROM sessoes WHERE operador_id = ?", (op["id"],))
+    registrar_evento("info", "seguranca", f"MFA ligado: {usuario}")
+
+
+def desativar_mfa(usuario: str) -> None:
+    usuario = (usuario or "").strip().lower()
+    with conectar() as conn:
+        op = conn.execute("SELECT id FROM operadores WHERE usuario = ?", (usuario,)).fetchone()
+        if op is None:
+            raise FalhaLogin("Operador não encontrado.")
+        conn.execute("UPDATE operadores SET totp_ativo = 0, totp_ultimo_passo = NULL,"
+                     " atualizado_em = ? WHERE id = ?", (agora(), op["id"]))
+        conn.execute("DELETE FROM sessoes WHERE operador_id = ?", (op["id"],))
+    try:
+        _cofre().apagar("operador", f"totp:{usuario}")
+    except Exception:
+        pass
+    registrar_evento("atencao", "seguranca", f"MFA desligado: {usuario}")
+
+
+def definir_ativo(usuario: str, ativo: bool) -> None:
+    """Desativa (ou reativa) o operador. Desativar derruba as sessões na hora:
+    validar_sessao também recusa sessão de operador inativo. Achado S-19."""
+    usuario = (usuario or "").strip().lower()
+    with conectar() as conn:
+        op = conn.execute("SELECT id FROM operadores WHERE usuario = ?", (usuario,)).fetchone()
+        if op is None:
+            raise FalhaLogin("Operador não encontrado.")
+        conn.execute("UPDATE operadores SET ativo = ?, atualizado_em = ? WHERE id = ?",
+                     (1 if ativo else 0, agora(), op["id"]))
+        if not ativo:
+            conn.execute("DELETE FROM sessoes WHERE operador_id = ?", (op["id"],))
+    registrar_evento("atencao" if not ativo else "info", "seguranca",
+                     f"Operador {'desativado' if not ativo else 'reativado'}: {usuario}")
 
 
 # -------------------------------------------------------------------- Senha
@@ -159,8 +288,9 @@ def _marcar_falha(operador_id: int, tentativas: int):
                          f"depois de {tentativas} tentativas")
 
 
-def autenticar(usuario: str, senha: str) -> tuple[str, str]:
-    """Devolve (id_da_sessao, token_csrf). Levanta FalhaLogin em qualquer recusa."""
+def autenticar(usuario: str, senha: str, codigo: str | None = None) -> tuple[str, str]:
+    """Devolve (id_da_sessao, token_csrf). Levanta FalhaLogin em qualquer recusa;
+    PrecisaCodigo quando a senha confere e o MFA pede o código."""
     usuario = (usuario or "").strip().lower()
     with conectar() as conn:
         op = conn.execute("SELECT * FROM operadores WHERE usuario = ?", (usuario,)).fetchone()
@@ -175,11 +305,37 @@ def autenticar(usuario: str, senha: str) -> tuple[str, str]:
         _marcar_falha(op["id"], op["tentativas"] or 0)
         raise FalhaLogin("Usuário ou senha inválidos.")
 
+    # Operador desativado: a mesma resposta de credencial errada, sem dizer
+    # que a conta existe; o evento registra o motivo.
+    if not op["ativo"]:
+        registrar_evento("atencao", "seguranca", f"Login recusado: operador desativado ({usuario})")
+        raise FalhaLogin("Usuário ou senha inválidos.")
+
+    passo = None
+    if op["totp_ativo"]:
+        if not (codigo or "").strip():
+            raise PrecisaCodigo("Digite o código do app autenticador.")
+        segredo = _cofre().ler("operador", f"totp:{usuario}")
+        passo = conferir_totp(segredo, codigo, op["totp_ultimo_passo"]) if segredo else None
+        if passo is None:
+            _marcar_falha(op["id"], op["tentativas"] or 0)
+            raise FalhaLogin("Código do autenticador inválido ou já usado.")
+
     sid = secrets.token_urlsafe(32)
     csrf = secrets.token_urlsafe(32)
     inicio = momento.isoformat(timespec="seconds")
     expira = (momento + timedelta(hours=DURACAO_MAX_H)).isoformat(timespec="seconds")
     with conectar() as conn:
+        if passo is not None:
+            # Grava o passo só se nenhum login em paralelo usou este código
+            # depois da leitura lá em cima. Sem linha gravada, o erro desfaz
+            # a transação e nenhuma sessão nasce.
+            gravado = conn.execute(
+                "UPDATE operadores SET totp_ultimo_passo = ? WHERE id = ? AND totp_ativo = 1"
+                " AND (totp_ultimo_passo IS NULL OR totp_ultimo_passo < ?)",
+                (passo, op["id"], passo)).rowcount
+            if not gravado:
+                raise FalhaLogin("Código do autenticador inválido ou já usado.")
         conn.execute("UPDATE operadores SET tentativas = 0, bloqueado_ate = NULL WHERE id = ?",
                      (op["id"],))
         conn.execute("DELETE FROM sessoes WHERE expira_em <= ?", (inicio,))
@@ -197,7 +353,7 @@ def validar_sessao(sid: str | None) -> dict | None:
     with conectar() as conn:
         s = conn.execute(
             "SELECT s.*, o.usuario FROM sessoes s JOIN operadores o ON o.id = s.operador_id"
-            " WHERE s.id = ?", (sid,)).fetchone()
+            " WHERE s.id = ? AND o.ativo = 1", (sid,)).fetchone()
         if s is None:
             return None
         vencida = (_quando(s["expira_em"]) <= momento

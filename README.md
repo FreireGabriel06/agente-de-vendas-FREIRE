@@ -14,8 +14,9 @@ Built with **FastAPI** and **SQLite** and operated from a local web panel.
 > price and writes the purchase order marked as a test; the order or question
 > keeps waiting and returns to the queue when simulation is turned off. The marketplace
 > integrations are implemented but have **not been validated against live
-> seller accounts**. The panel requires a login, but with a single shared
-> operator and no HTTPS by default — keep it on `127.0.0.1`.
+> seller accounts**. The panel requires a login (optionally with an
+> authenticator-app code) and refuses to listen beyond `127.0.0.1` without
+> HTTPS; there is still a single operator and no roles.
 
 The purchase flow targets Mercado Livre (Brazil). For Amazon.com (US) the
 service authorizes a seller account and syncs its orders read-only for
@@ -106,6 +107,8 @@ What the automated suite covers, and how to run it, is under [Tests](#tests).
 | Money as `Decimal` with an explicit ISO 4217 currency for the product cost, the supplier minimum order and the order sale and cost amounts: canonical decimal text plus a currency column next to their old `REAL` columns, old databases migrated with the currency left empty ("moeda não informada"); dates written in UTC with the offset | `core/dinheiro.py`, `db.py`, `worker.py` | Tested |
 | Orders stuck in `PROBLEMA` after a data fix (product cost or currency, weight, supplier, deactivated product, missing sale currency) go back to analysis with `cli.py pedido reanalisar` or `POST /api/pedidos/{id}/reanalisar`, only when no purchase order can have gone out | `worker.py`, `cli.py`, `painel/app.py` | Tested |
 | Panel login: one operator, server-side session, CSRF token in a header | `core/seguranca.py`, `painel/app.py` | Tested |
+| Second factor by authenticator app (TOTP, RFC 6238, standard library only): secret in the encrypted vault, a code works once, a wrong code counts toward the lockout; operator deactivation ends every session at once — see [Panel security](#panel-security) | `core/seguranca.py`, `cli.py`, `painel/app.py` | Tested |
+| HTTPS: the panel serves TLS itself (`TLS_CERT`, `TLS_CHAVE`) or trusts `X-Forwarded-Proto` only from a reverse proxy (`PROXY_HTTPS`, `PROXY_IPS`); it refuses to start on a non-local address without one of them; `Secure` session cookie and HSTS under HTTPS; `nosniff`, `X-Frame-Options: DENY` and `Referrer-Policy` on every response | `executar.py`, `painel/app.py` | Tested |
 | OAuth return: `state` created by the same panel session, single use, valid for 10 minutes; return pages escape their output and show fixed error messages | `core/seguranca.py`, `painel/app.py`, `painel/configurar.py` | Tested with a fake token endpoint |
 | Data folder for `.env`, database, keys, legacy token files and purchase orders: `AGENTE_DADOS`, the executable's folder, or the project folder | `config.py` | Tested |
 | Panel port and worker interval from `.env` or the environment (`PORTA_PAINEL`, `INTERVALO_WORKER`); a non-numeric or out-of-range value falls back to the default with a warning | `config.py`, `executar.py`, `worker.py` | Tested |
@@ -767,7 +770,9 @@ Reply drafts use the official `anthropic` Python SDK
 | `DB_PATH` | `agente.db` | SQLite database file; a relative path is resolved against the data folder |
 | `CHAVE_LGPD` | empty | Buyer-data encryption key; when empty, `.chave_lgpd` is used |
 | `RETENCAO_PII_DIAS` | `1825` | Days before buyer data is purged |
-| `HOST_PAINEL` | `127.0.0.1` | Panel address; keep it while there is a single operator and no HTTPS |
+| `HOST_PAINEL` | `127.0.0.1` | Panel address. Any other address needs HTTPS (next rows); the panel refuses to start without it |
+| `TLS_CERT`, `TLS_CHAVE` | empty | Certificate and private key files (PEM): the panel serves HTTPS itself. Set both or neither |
+| `PROXY_HTTPS`, `PROXY_IPS` | `false`, `127.0.0.1` | A reverse proxy in front does HTTPS; the panel trusts `X-Forwarded-Proto` only from these addresses |
 | `SESSAO_OCIOSA_MIN`, `SESSAO_MAX_HORAS` | `30`, `8` | Idle timeout and maximum session lifetime |
 | `WORKER_ATIVO`, `ABRIR_NAVEGADOR` | `true` | Start the worker; open the browser |
 | `ESTOQUE_MINIMO`, `ALERTA_DADO_VELHO_HORAS` | `3`, `6` | Alerts: available stock at or below this opens "low stock"; data without a successful sync for longer than this many hours opens "stale data" |
@@ -843,6 +848,35 @@ program stops with an error instead of creating a new key, which would make
 that data unreadable for good. Restore `.chave_lgpd` from a backup or set
 `CHAVE_LGPD`.
 
+## Panel security
+
+Second factor (TOTP, the code from Google Authenticator, Aegis, 1Password and
+similar apps):
+
+```bash
+python cli.py operador --usuario your_user --mfa-ativar     # shows the otpauth:// link and the key once, then asks for a code
+python cli.py operador --usuario your_user --mfa-desativar
+```
+
+The key is stored only in the encrypted vault. Turning MFA on ends the open
+sessions. The login screen asks for the code after the password; a code
+works once, and a wrong code counts toward the same lockout as a wrong
+password. Losing the phone: run `--mfa-desativar` on the machine and turn it
+on again.
+
+Deactivating an operator ends its sessions immediately and refuses its login
+with the same message as a wrong password; `--reativar` undoes it:
+
+```bash
+python cli.py operador --usuario your_user --desativar
+```
+
+HTTPS is required before `HOST_PAINEL` leaves `127.0.0.1`. Either give the
+panel a certificate (`TLS_CERT` and `TLS_CHAVE`), or put a reverse proxy that
+does HTTPS (Caddy, nginx) in front and set `PROXY_HTTPS=true`; the panel then
+trusts `X-Forwarded-Proto` only from `PROXY_IPS`. Under HTTPS the session
+cookie is `Secure` and responses carry HSTS.
+
 ## Design decisions
 
 **People release irreversible actions.** Purchases, public buyer replies, price
@@ -897,7 +931,7 @@ Sheet and the cryptography and secret-management chapters of OWASP ASVS 5.0.
 
 ## Known limitations
 
-- One shared operator, no roles and no HTTPS by default. Keep the panel on `127.0.0.1` until both exist.
+- One operator account and no roles: whoever logs in can do everything. MFA is optional and off until you turn it on.
 - Mercado Livre drives the purchase flow. Amazon orders are synced read-only for monitoring and never enter the purchase flow (Amazon forbids a third party as the sender); the panel screen does not list them yet (the API does). Shopee stops at the connection test.
 - Connecting sellers other than yourself on Amazon needs a public developer registration and an app approved by Amazon; that review is outside this project's control.
 - Backups are manual (or scheduled by you with `BACKUP_SENHA`); nothing copies them off the machine. A restore reapplies only the deletions recorded in the eliminations file it is given.
