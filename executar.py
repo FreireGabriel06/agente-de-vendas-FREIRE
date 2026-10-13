@@ -70,6 +70,28 @@ def _abrir_navegador():
     webbrowser.open(f"http://127.0.0.1:{porta()}")
 
 
+def opcoes_https() -> tuple[dict, str | None]:
+    """Como servir HTTPS (lote S4; achados S-10 e S-25). Devolve as opções do
+    uvicorn e um erro, se a configuração estiver pela metade.
+
+    - TLS_CERT e TLS_CHAVE: o próprio painel serve HTTPS com esse certificado.
+    - PROXY_HTTPS=true: um proxy na frente (Caddy, nginx) faz o HTTPS e manda
+      X-Forwarded-Proto; o painel só confia nesse cabeçalho vindo de PROXY_IPS
+      (padrão 127.0.0.1)."""
+    cert, chave = os.getenv("TLS_CERT", "").strip(), os.getenv("TLS_CHAVE", "").strip()
+    if bool(cert) != bool(chave):
+        return {}, "Defina TLS_CERT e TLS_CHAVE juntos (certificado e chave privada)."
+    if cert:
+        for caminho in (cert, chave):
+            if not os.path.isfile(caminho):
+                return {}, f"Arquivo de TLS não encontrado: {caminho}"
+        return {"ssl_certfile": cert, "ssl_keyfile": chave}, None
+    if os.getenv("PROXY_HTTPS", "").strip().lower() in ("1", "true", "sim", "yes"):
+        return {"proxy_headers": True,
+                "forwarded_allow_ips": os.getenv("PROXY_IPS", "127.0.0.1")}, None
+    return {}, None
+
+
 def main():
     from painel.app import app, preparar
     from core import seguranca
@@ -87,6 +109,17 @@ def main():
             print(f"Recusando iniciar em {host} sem operador.")
             return
 
+    https, erro = opcoes_https()
+    if erro:
+        print(f"Recusando iniciar: {erro}")
+        return
+    # Fora do endereço local, só com HTTPS: senha, sessão e dado de comprador
+    # não podem passar em texto pela rede.
+    if not local and not https:
+        print(f"Recusando iniciar em {host} sem HTTPS. Defina TLS_CERT e TLS_CHAVE, ou "
+              "PROXY_HTTPS=true com um proxy HTTPS na frente.")
+        return
+
     if os.getenv("WORKER_ATIVO", "true").lower() == "true":
         threading.Thread(target=_laco_worker, daemon=True).start()
         print(f"Worker ativo, ciclo a cada {intervalo()}s.")
@@ -103,10 +136,11 @@ def main():
     if os.getenv("ABRIR_NAVEGADOR", "true").lower() == "true":
         threading.Thread(target=_abrir_navegador, daemon=True).start()
 
-    print(f"Painel em http://127.0.0.1:{porta()}  (Ctrl+C encerra)")
+    esquema = "https" if "ssl_certfile" in https else "http"
+    print(f"Painel em {esquema}://127.0.0.1:{porta()}  (Ctrl+C encerra)")
 
     import uvicorn
-    uvicorn.run(app, host=host, port=porta(), log_level="warning")
+    uvicorn.run(app, host=host, port=porta(), log_level="warning", **https)
 
 
 if __name__ == "__main__":
