@@ -175,6 +175,38 @@ CREATE TABLE IF NOT EXISTS amazon_itens (
     UNIQUE(amazon_order_id, order_item_id)
 );
 
+-- Anúncios da Amazon (lote 8), um por SKU no marketplace configurado. A
+-- quantidade própria vem da Listings API (canal DEFAULT, estoque do vendedor);
+-- a da FBA, da FBA Inventory API. NULL é "não informado", nunca zero.
+CREATE TABLE IF NOT EXISTS amazon_anuncios (
+    sku                  TEXT PRIMARY KEY,
+    asin                 TEXT,
+    titulo               TEXT,
+    status               TEXT,           -- BUYABLE, DISCOVERABLE (separados por vírgula)
+    quantidade_propria   INTEGER,
+    fba_disponivel       INTEGER,
+    fba_total            INTEGER,
+    preco_dec            TEXT,
+    preco_moeda          TEXT,
+    atualizado_na_amazon TEXT,
+    visto_em             TEXT,           -- última passada que trouxe o SKU
+    estoque_fba_em       TEXT            -- última passada da FBA que trouxe o SKU
+);
+
+-- Alertas (lote 8): um aberto por (tipo, chave). Cada um diz o horário do
+-- último dado válido. Fecha sozinho quando a condição some.
+CREATE TABLE IF NOT EXISTS alertas (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    tipo               TEXT NOT NULL,    -- estoque_baixo | sincronizacao_falhou | conexao_vencida | dado_velho
+    chave              TEXT NOT NULL,    -- SKU ou fonte
+    mensagem           TEXT NOT NULL,
+    ultimo_dado_valido TEXT,
+    aberto_em          TEXT NOT NULL,
+    atualizado_em      TEXT NOT NULL,
+    resolvido_em       TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_alerta_aberto ON alertas(tipo, chave) WHERE resolvido_em IS NULL;
+
 -- Uma linha por fonte de dados: cursor, última tentativa, último sucesso e
 -- o resultado. Último sucesso e última tentativa são separados: uma falha não
 -- apaga a data do último dado válido.

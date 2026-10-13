@@ -818,7 +818,19 @@ def sincronizar_amazon():
         configurada = False
     if not configurada:
         return "não configurada"
-    return sincronizacao.sincronizar_amazon()
+    from conectores.amazon import Amazon
+    amz = Amazon()  # um token LWA para as três leituras
+    return {"pedidos": sincronizacao.sincronizar_amazon(amz),
+            "anuncios": sincronizacao.sincronizar_anuncios(amz),
+            "estoque_fba": sincronizacao.sincronizar_estoque_fba(amz)}
+
+
+def avaliar_alertas():
+    """Abre, atualiza e fecha alertas (core/alertas.py). Roda sempre: um
+    alerta de sincronização com falha precisa aparecer justo quando a
+    sincronização não anda."""
+    from core import alertas
+    return alertas.avaliar()
 
 
 def _passada() -> dict:
@@ -835,6 +847,7 @@ def _passada() -> dict:
         ("perguntas", lambda: atender_perguntas(ml)),
         ("rastreios", lambda: atualizar_rastreio(ml)),
         ("amazon", sincronizar_amazon),
+        ("alertas", avaliar_alertas),
     ]:
         try:
             resumo[nome] = func()

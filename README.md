@@ -48,7 +48,13 @@ Each worker cycle (every 5 minutes by default, `INTERVALO_WORKER`):
    escalated are skipped, and only a temporary failure (rate limit, API
    outage, network, missing key) is retried on the next cycle;
 6. updates the shipment status of orders marked as confirmed or in transit
-   (no step marks a purchase as confirmed yet).
+   (no step marks a purchase as confirmed yet);
+7. with Amazon configured, reads Amazon orders, listings (status, price and
+   your own stock) and FBA stock, read-only;
+8. opens, updates and closes **alerts**: low stock, a failed sync, an
+   expired Amazon connection and stale data. Every alert carries the time of
+   the last valid data, and one stays open per type and item until the
+   condition clears.
 
 Only one cycle runs at a time. While one is running (the background worker,
 a press of `c` in the panel, or `cli.py ciclo` / `cli.py rodar` in another
@@ -94,6 +100,8 @@ What the automated suite covers, and how to run it, is under [Tests](#tests).
 | Niche research: Google Trends and Mercado Livre search | `inteligencia/tendencias.py` | Not validated |
 | Shopee: partner authorization with HMAC-signed calls, order listing | `conectores/shopee.py` | Not validated; used only by connection setup and test, not by the worker |
 | Amazon SP-API, read-only: website authorization (consent with a session-bound `state`, log-in URI that returns the seller only to an Amazon domain, code exchanged within its 5 minutes, refresh token in the vault, `Referrer-Policy: no-referrer`) and incremental order sync (`getOrders` with `NextToken`, every item with `getOrderItems`, Decimal amounts with the Amazon currency, back-off on 429/5xx with `Retry-After` and the `x-amzn-RateLimit-Limit` rate, a cursor that moves only after a complete pass, no duplicates on re-runs). No buyer data is stored. Amazon orders never enter the supplier purchase flow | `conectores/amazon.py`, `core/sincronizacao.py`, `painel/`, `worker.py` | Tested against a fake SP-API; not validated with a live account |
+| Amazon listings and FBA stock, read-only: `searchListingsItems` (status, price as Decimal, your own stock) and `getInventorySummaries` (FBA fulfillable stock), both paginated; an account without FBA access is recorded as unavailable, not as a failure | `conectores/amazon.py`, `core/sincronizacao.py` | Tested against a fake SP-API; not validated with a live account |
+| Alerts: low stock (own plus FBA available, active listings only; unknown is not zero), failed sync, expired Amazon connection (the refresh token is refused) and stale data, each with the time of the last valid data; opened, updated and closed every cycle, one per type and item | `core/alertas.py`, `worker.py`, `painel/app.py` | Tested |
 | Product and supplier registration without SQL: list, read, create, edit and deactivate (no delete) through the panel API and `cli.py produto` / `cli.py fornecedor`, one validation for both (pydantic): field errors in Portuguese (HTTP 422), duplicate SKU 409, unknown fields refused; the compliance confirmations are editable there — see [Products and suppliers](#products-and-suppliers) | `core/cadastro.py`, `painel/app.py`, `cli.py` | Tested; no panel screen yet |
 | Money as `Decimal` with an explicit ISO 4217 currency for the product cost, the supplier minimum order and the order sale and cost amounts: canonical decimal text plus a currency column next to their old `REAL` columns, old databases migrated with the currency left empty ("moeda não informada"); dates written in UTC with the offset | `core/dinheiro.py`, `db.py`, `worker.py` | Tested |
 | Orders stuck in `PROBLEMA` after a data fix (product cost or currency, weight, supplier, deactivated product, missing sale currency) go back to analysis with `cli.py pedido reanalisar` or `POST /api/pedidos/{id}/reanalisar`, only when no purchase order can have gone out | `worker.py`, `cli.py`, `painel/app.py` | Tested |
@@ -761,6 +769,7 @@ Reply drafts use the official `anthropic` Python SDK
 | `HOST_PAINEL` | `127.0.0.1` | Panel address; keep it while there is a single operator and no HTTPS |
 | `SESSAO_OCIOSA_MIN`, `SESSAO_MAX_HORAS` | `30`, `8` | Idle timeout and maximum session lifetime |
 | `WORKER_ATIVO`, `ABRIR_NAVEGADOR` | `true` | Start the worker; open the browser |
+| `ESTOQUE_MINIMO`, `ALERTA_DADO_VELHO_HORAS` | `3`, `6` | Alerts: available stock at or below this opens "low stock"; data without a successful sync for longer than this many hours opens "stale data" |
 | `PORTA_PAINEL`, `INTERVALO_WORKER` | `8777`, `300` | Panel port (1–65535) and worker interval in seconds (at least 30), from the environment or `.env`; a bad value falls back to the default with a warning |
 | `MODO_SIMULACAO` | `true` | On: approving records what would happen and sends nothing — no buyer reply, no price change — and the purchase order file is marked as a test; the order or question keeps waiting and returns to the queue once it is off. Only `false`, `0`, `no`, `off` or `nao` turns it off |
 
@@ -790,8 +799,9 @@ with a live account yet.
   the seller consents in Seller Central, Amazon calls the log-in URI, the panel
   sends the seller back to Amazon, and the redirect URI exchanges the code.
   Without HTTPS on that address, paste the return URL into the panel
-  (`/api/configuracao/concluir-amazon`). The worker then reads orders every
-  cycle; `/api/amazon/pedidos` and `/api/amazon/sincronizacao` show them.
+  (`/api/configuracao/concluir-amazon`). The worker then reads orders, listings and
+  FBA stock every cycle; `/api/amazon/pedidos`, `/api/amazon/anuncios`,
+  `/api/amazon/sincronizacao` and `/api/alertas` show them.
 
 **Testar conexão** calls the real API; for Claude it is a model lookup that
 costs no tokens. Secrets and tokens go to the encrypted
