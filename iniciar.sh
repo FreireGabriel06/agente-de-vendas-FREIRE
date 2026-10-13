@@ -101,7 +101,7 @@ if [ ! -f "$DADOS/.primeira_execucao" ]; then
     echo "  Carregar dados de exemplo pra você ver o painel funcionando?"
     read -r -p "  [S/n] " resp
     if [[ ! "$resp" =~ ^[Nn] ]]; then
-      $PY demo.py >/dev/null 2>&1 && ok "Dados de exemplo carregados"
+      $PY demo.py >/dev/null 2>&1 && ok "Dados de exemplo carregados" || echo "  [!] Exemplo não carregado: o banco já tem dados. Veja: $PY demo.py"
     fi
     echo
   fi

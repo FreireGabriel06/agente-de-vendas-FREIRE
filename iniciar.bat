@@ -116,8 +116,7 @@ if not exist "!DADOS!\.primeira_execucao" (
   echo feito > "!DADOS!\.primeira_execucao"
   set /p RESP="  Carregar dados de exemplo pra ver o painel funcionando? [S/n] "
   if /i not "!RESP!"=="n" (
-    python demo.py >nul 2>&1
-    echo   [ok] Dados de exemplo carregados
+    python demo.py >nul 2>&1 && echo   [ok] Dados de exemplo carregados || echo   [!] Exemplo nao carregado: o banco ja tem dados. Veja: python demo.py
   )
   echo.
 )

@@ -149,8 +149,11 @@ Before you rely on it:
   the vault with `python cli.py cofre apagar --tudo`, then reconnecting every
   marketplace and typing the secrets again. See
   [Credential vault](#credential-vault).
-- **`demo.py` deletes** the existing orders, order history, approvals, products
-  and suppliers before loading synthetic data. Use it only on a test database.
+- **`demo.py` replaces data.** It loads synthetic orders, products and suppliers
+  only into an empty database or one that holds just its own sample data. If the
+  database has anything else, it refuses (exit code 2) and lists what it would
+  delete; `python demo.py --apagar-dados-existentes` deletes it anyway. The
+  launchers say when the sample was not loaded.
 - With Mercado Livre credentials in `.env`, the worker calls the Mercado Livre
   API a few seconds after start-up. Set `WORKER_ATIVO=false` to keep it idle.
 - **Simulation mode is on until you turn it off.** Approving then records what
@@ -520,7 +523,8 @@ What it covers:
   file byte-identical and a warning; Mercado Livre and Shopee renewal, Shopee
   signing and both code exchanges through the vault (fake HTTP); `gravar_env`
   and `/api/configuracao/salvar` keep secret values out of `.env` and out of
-  the response; reading order (system environment, vault, old `.env` value;
+  the response, and refuse (HTTP 400) a value with a line break or other
+  control character, which would add a line to `.env`; reading order (system environment, vault, old `.env` value;
   rotated refresh tokens); no secret or key in the `eventos` table; the
   migration command leaves `.env` byte-identical; the worker keeps running
   with a broken vault. Single-use refresh tokens (fake token server that
@@ -641,7 +645,7 @@ Commands (none of them prints a value or a key):
 ```bash
 python cli.py cofre migrar       # copy .env secrets and legacy token files into the vault
 python cli.py cofre rotacionar   # re-encrypt every entry with the current key
-python cli.py cofre listar       # provider, name and date of each entry
+python cli.py cofre listar       # provider, name and date of each entry (read-only: creates nothing)
 python cli.py cofre apagar mercadolivre refresh_token   # revoke one entry
 python cli.py cofre apagar --tudo   # lost key: delete every entry, asks for confirmation
 ```

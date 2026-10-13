@@ -124,7 +124,8 @@ def test_cli_sem_agente_dados_diz_a_pasta_antes_de_gravar(monkeypatch):
 
     monkeypatch.setattr(cli, "inicializar", inicializar_vigiado)
     monkeypatch.setattr(sys, "stderr", SaidaVigiada(ordem))
-    monkeypatch.setattr(sys, "argv", ["cli.py", "cofre", "listar"])
+    # init grava no banco; cofre listar só lê desde o lote S2.
+    monkeypatch.setattr(sys, "argv", ["cli.py", "init"])
     monkeypatch.delenv("AGENTE_DADOS")
 
     cli.main()

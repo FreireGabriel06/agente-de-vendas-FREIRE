@@ -90,6 +90,23 @@ def extrair_code(texto: str) -> tuple[str, str]:
     return texto, ""
 
 
+_NOME_DE_CHAVE = re.compile(r"[A-Z][A-Z0-9_]*")
+
+
+def problema_na_chave(chave: str, valor: str) -> str | None:
+    """O motivo de recusar o par, ou None. Cada par vira uma linha CHAVE=valor
+    no .env: uma quebra de linha ou outro caractere de controle no valor
+    escreveria uma linha a mais (MODO_SIMULACAO=false, DB_PATH de outra
+    instância). Achado S-05 da auditoria de 06/10/2026."""
+    if not isinstance(chave, str) or not _NOME_DE_CHAVE.fullmatch(chave):
+        return "Nome de configuração inválido."
+    if not isinstance(valor, str):
+        return f"{chave}: o valor precisa ser texto."
+    if any(ord(c) < 32 or 127 <= ord(c) < 160 or ord(c) in (0x2028, 0x2029) for c in valor):
+        return f"{chave}: o valor tem quebra de linha ou outro caractere de controle."
+    return None
+
+
 def gravar_env(chaves: dict[str, str]) -> dict:
     """
     Guarda as configurações. Segredo vai para o cofre cifrado e nunca é
@@ -102,6 +119,11 @@ def gravar_env(chaves: dict[str, str]) -> dict:
     Devolve só nomes, nunca valores: {"env", "cofre", "sobrepostos",
     "em_texto_no_env"}.
     """
+    for chave, valor in chaves.items():
+        problema = problema_na_chave(chave, valor)
+        if problema:
+            raise ValueError(problema)
+
     segredos = {k: v for k, v in chaves.items() if k in cofre.SEGREDOS}
     comuns = {k: v for k, v in chaves.items() if k not in cofre.SEGREDOS}
 

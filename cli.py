@@ -179,6 +179,15 @@ def cmd_cofre(args):
     """Cofre de credenciais. Nunca imprime valor nem chave."""
     from core import cofre
 
+    if args.acao == "listar":
+        # Só lê: não cria banco, tabela nem chave (achado S-81 da auditoria).
+        itens = cofre.listar()
+        if not itens:
+            print("Cofre vazio.")
+        for item in itens:
+            print(f"  {item['provedor']:<14} {item['nome']:<18} atualizado em {item['atualizado_em']}")
+        return
+
     inicializar()
     cofre.inicializar_cofre()
 
@@ -215,14 +224,6 @@ def cmd_cofre(args):
               f"{cofre.VARIAVEL_CHAVE} ou de {cofre.ARQ_CHAVE.name}).")
         if total and cofre.quantidade_de_chaves() > 1:
             print("A chave antiga já pode sair. Guarde o backup da chave nova.")
-        return
-
-    if args.acao == "listar":
-        itens = cofre.listar()
-        if not itens:
-            print("Cofre vazio.")
-        for item in itens:
-            print(f"  {item['provedor']:<14} {item['nome']:<18} atualizado em {item['atualizado_em']}")
         return
 
     if args.acao == "apagar" and args.tudo:
