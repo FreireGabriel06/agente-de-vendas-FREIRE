@@ -125,6 +125,12 @@ def main():
         print(f"Recusando iniciar em {host} sem HOSTS_PAINEL: defina o nome (ou IP) pelo "
               "qual o painel é acessado, por exemplo HOSTS_PAINEL=painel.exemplo.com.br")
         return
+    # Exposto, todo operador ativo entra com o app autenticador (DPP 1.4.1).
+    sem_mfa = seguranca.operadores_sem_mfa() if not local else []
+    if sem_mfa:
+        print(f"Recusando iniciar em {host}: operador(es) sem MFA: {', '.join(sem_mfa)}. "
+              "Ative com: python cli.py operador --usuario NOME --mfa-ativar")
+        return
 
     if os.getenv("WORKER_ATIVO", "true").lower() == "true":
         threading.Thread(target=_laco_worker, daemon=True).start()

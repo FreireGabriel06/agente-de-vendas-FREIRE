@@ -214,7 +214,7 @@ def test_painel_fora_do_loopback_nao_sobe_sem_https(operador, monkeypatch, capsy
     assert "sem HTTPS" in capsys.readouterr().out
 
 
-def test_painel_fora_do_loopback_sobe_atras_de_proxy_https(operador, monkeypatch):
+def test_painel_fora_do_loopback_sobe_atras_de_proxy_https(com_mfa, monkeypatch):
     import executar
     import uvicorn
 

@@ -241,7 +241,9 @@ def test_sessao_vence_em_8_horas_mesmo_em_uso(sessao):
 def test_troca_de_senha_derruba_as_sessoes_abertas(sessao):
     cliente, _ = sessao
     assert cliente.get("/api/sessao").status_code == 200
-    seguranca.definir_operador(USUARIO, "outra-senha-de-teste-678")
+    with conectar() as conn:  # a senha não pode ter sido trocada há menos de 24 h
+        conn.execute("UPDATE operadores SET senha_trocada_em = ?", (_ha(days=2),))
+    seguranca.definir_operador(USUARIO, "Outra-Chave-Forte-678!")
     assert cliente.get("/api/sessao").status_code == 401
 
 
