@@ -35,7 +35,7 @@ an active operator has no second factor.
 | In transit | TLS for every marketplace call (certificates verified); panel served over HTTPS when exposed | 1.5 |
 | At rest | Buyer data from Mercado Livre encrypted with its own key; backups encrypted with a separate password (scrypt, then Fernet) | 2.4 |
 | Amazon data | Read-only. No buyer name, address, e-mail or phone is stored: only order ids, status, amounts, items, listings and stock. `cli.py amazon apagar-dados` deletes it all with the refresh token, overwrites freed pages and compacts the file; restoring an older backup deletes it again | 1.7, 2.1 |
-| Logs | Events with timestamp, origin and outcome for logins, lockouts, configuration, approvals, vault and synchronization; no buyer data, secrets or response bodies; never purged by the software (kept ≥ 12 months) | 2.6.1 |
+| Logs | Events with timestamp, origin, outcome and actor for logins, lockouts, configuration, approvals, vault and synchronization; no buyer data, secrets or response bodies; insert-only table, hash-chained (`cli.py eventos --verificar`); never purged by the software (kept ≥ 12 months); one warning event when an address reaches the login limit | 2.6.1, 2.6.2 |
 | Vulnerabilities | Every pull request runs the tests, `pip-audit` on the pinned versions (`constraints.txt`) and `gitleaks` over the whole history | 2.7.1, 2.5 |
 
 ## Operator responsibilities
@@ -50,6 +50,9 @@ The software cannot provide these; whoever runs an instance does:
   penetration test.
 - People: data protection training every year; confidentiality clauses; the
   access review every quarter (`python cli.py operadores`), kept as a record.
+- Log review at least every two weeks: read the warning events and run
+  `python cli.py eventos --verificar`; write the printed last hash in the
+  review record, outside the machine, so a rewritten trail is noticed.
 - A written risk assessment reviewed every year, and a published privacy
   policy for the sellers.
 - Backups (`cli.py backup criar`) stored in a separate location.

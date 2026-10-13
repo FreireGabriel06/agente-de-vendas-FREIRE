@@ -33,7 +33,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
 from config import config
-from db import conectar, inicializar, registrar_evento
+from db import conectar, definir_ator, inicializar, registrar_evento
 from core import aprovacao, cadastro, cofre, conformidade, privacidade, seguranca
 from core.erros import mensagem_segura
 from core.estados import Estado, ESTADOS_CRITICOS, historico
@@ -58,6 +58,8 @@ CAMINHOS_LIVRES = {"/login", "/api/login"}
 async def exigir_sessao(request: Request, call_next):
     caminho = request.url.path
     if caminho in CAMINHOS_LIVRES:
+        # Na trilha, o login fica com o endereço de quem tentou (DPP 2.6.1).
+        definir_ator(f"login de {request.client.host if request.client else 'desconhecido'}")
         return await call_next(request)
 
     sid = request.cookies.get(seguranca.COOKIE_SESSAO)
@@ -73,6 +75,7 @@ async def exigir_sessao(request: Request, call_next):
             return JSONResponse({"detail": "Token CSRF inválido."}, status_code=403)
 
     request.state.operador = sessao["usuario"]
+    definir_ator(sessao["usuario"])
     request.state.csrf = sessao["csrf"]
     request.state.sid = sid  # prende o state do OAuth a esta sessão
     return await call_next(request)
@@ -335,7 +338,7 @@ def api_expurgar():
 def api_eventos(n: int = Query(40, ge=1, le=200)):
     with conectar() as conn:
         linhas = conn.execute(
-            "SELECT nivel, origem, mensagem, ocorrido_em FROM eventos"
+            "SELECT nivel, origem, mensagem, ocorrido_em, ator FROM eventos"
             " ORDER BY id DESC LIMIT ?", (n,)).fetchall()
     return {"eventos": [dict(l) for l in linhas]}
 

@@ -45,7 +45,7 @@ import sys
 from pathlib import Path
 
 from config import avisar_pasta_de_dados, config
-from db import inicializar, conectar
+from db import conectar, definir_ator, inicializar
 from core import aprovacao, cadastro, conformidade, dinheiro, privacidade
 from inteligencia import precificacao, tendencias
 
@@ -545,13 +545,25 @@ def _opcoes_fornecedor(p, edicao: bool):
 
 
 def cmd_eventos(args):
+    from db import verificar_trilha
+
+    inicializar()
+    if args.verificar:
+        v = verificar_trilha()
+        if v["quebra"] is not None:
+            print(f"A trilha NÃO confere a partir do evento {v['quebra']}: alteração ou exclusão.")
+            sys.exit(1)
+        print(f"Trilha confere: {v['eventos']} evento(s), {v['sem_hash']} de antes do encadeamento.")
+        print(f"Último hash (anote fora desta máquina): {v['ultimo_hash'] or '—'}")
+        return
     with conectar() as conn:
         linhas = conn.execute(
-            "SELECT nivel, origem, mensagem, ocorrido_em FROM eventos"
+            "SELECT nivel, origem, mensagem, ocorrido_em, ator FROM eventos"
             " ORDER BY id DESC LIMIT ?", (args.n,),
         ).fetchall()
     for l in reversed(linhas):
-        print(f"  {l['ocorrido_em'][11:19]} [{l['nivel']:<7}] {l['origem']:<14} {l['mensagem']}")
+        print(f"  {l['ocorrido_em'][:19]} [{l['nivel']:<7}] {l['origem']:<14} "
+              f"{(l['ator'] or '—'):<22} {l['mensagem']}")
 
 
 def _senha_do_backup(confirmar: bool) -> str:
@@ -590,6 +602,14 @@ def cmd_backup(args):
         print(f"  Para usar: defina AGENTE_DADOS={args.pasta} e inicie o agente.")
 
 
+def _usuario_do_sistema() -> str:
+    import getpass
+    try:
+        return getpass.getuser()
+    except Exception:
+        return "desconhecido"
+
+
 def main():
     p = argparse.ArgumentParser(description="Agente comercial", formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -614,7 +634,10 @@ def main():
     m.set_defaults(func=cmd_margem)
 
     ro = sub.add_parser("rodar"); ro.add_argument("--intervalo", type=int, default=None); ro.set_defaults(func=cmd_rodar)
-    ev = sub.add_parser("eventos"); ev.add_argument("-n", type=int, default=25); ev.set_defaults(func=cmd_eventos)
+    ev = sub.add_parser("eventos", help="últimos eventos; --verificar confere a trilha")
+    ev.add_argument("-n", type=int, default=25)
+    ev.add_argument("--verificar", action="store_true", help="refaz o encadeamento de hashes")
+    ev.set_defaults(func=cmd_eventos)
 
     op = sub.add_parser("operador", help="cria o operador ou troca a senha; MFA; desativar")
     op.add_argument("--usuario", required=True)
@@ -688,6 +711,7 @@ def main():
     args = p.parse_args()
     # Antes de qualquer gravação: sem AGENTE_DADOS, diz qual pasta vai ser usada.
     avisar_pasta_de_dados()
+    definir_ator(f"cli ({_usuario_do_sistema()})")
     try:
         args.func(args)
     except Exception as e:

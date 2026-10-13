@@ -7,6 +7,8 @@ decimal canônico (<nome>_dec) e a moeda ISO 4217 (<nome>_moeda). O código
 novo lê o texto decimal; a REAL fica como espelho para bancos e código antigos.
 Datas são gravadas por agora(): UTC, ISO 8601 com o fuso (+00:00).
 """
+import contextvars
+import hashlib
 import sqlite3
 import json
 from contextlib import contextmanager
@@ -273,6 +275,11 @@ COLUNAS_ACRESCENTADAS = {
         "custo_previsto_dec": "TEXT",
         "custo_previsto_moeda": "TEXT",
     },
+    # Trilha de auditoria (lote S10): quem agiu e o encadeamento.
+    "eventos": {
+        "ator": "TEXT",
+        "hash": "TEXT",
+    },
 }
 
 # Valores em dinheiro: a coluna REAL antiga ganha <nome>_dec e <nome>_moeda.
@@ -325,13 +332,89 @@ def inicializar():
                     if nome.endswith("_dec") and real in VALORES_EM_DINHEIRO.get(tabela, ()):
                         _copiar_da_coluna_real(conn, tabela, real)
         _gatilhos_da_coluna_real(conn)
+        _trilha_so_de_inclusao(conn)
+
+
+# ------------------------------------------------------------ Trilha de eventos
+#
+# Data Protection Policy da Amazon, 2.6.1: registro com data, resultado e
+# autor, protegido contra alteração, guardado por pelo menos 12 meses. Aqui:
+#   - cada evento diz quem agiu (ator): o operador da sessão do painel, o
+#     endereço de quem tenta o login, "cli (usuário do sistema)" ou "sistema"
+#     (o worker), por uma variável de contexto, sem mexer em quem registra;
+#   - gatilhos recusam UPDATE e DELETE na tabela (nada no código apaga
+#     evento);
+#   - cada evento guarda o SHA-256 do anterior com o próprio conteúdo:
+#     verificar_trilha() acha a primeira linha alterada ou apagada no meio. O
+#     último hash, anotado fora da máquina na revisão quinzenal, protege
+#     também o fim da trilha.
+
+_ator = contextvars.ContextVar("ator", default=None)
+
+
+def definir_ator(nome: str | None):
+    """Quem age daqui em diante neste contexto (requisição, comando, thread)."""
+    return _ator.set(nome)
+
+
+def ator_atual() -> str:
+    return _ator.get() or "sistema"
+
+
+def _trilha_so_de_inclusao(conn):
+    for acao in ("UPDATE", "DELETE"):
+        conn.execute(f"CREATE TRIGGER IF NOT EXISTS eventos_sem_{acao.lower()} BEFORE {acao}"
+                     " ON eventos BEGIN SELECT RAISE(ABORT, 'A trilha de eventos só aceita"
+                     " inclusão.'); END")
+
+
+def _hash_do_evento(anterior, nivel, origem, mensagem, detalhe_json, ocorrido_em, ator) -> str:
+    conteudo = json.dumps([anterior or "", nivel, origem, mensagem, detalhe_json, ocorrido_em, ator],
+                          ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(conteudo.encode()).hexdigest()
 
 
 def registrar_evento(nivel: str, origem: str, mensagem: str, detalhe=None):
+    detalhe_json = json.dumps(detalhe, ensure_ascii=False) if detalhe else None
+    momento, ator = agora(), ator_atual()
     with conectar() as conn:
+        # Um evento por vez, entre processos também: o hash do anterior não
+        # muda entre a leitura e a gravação.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            anterior = conn.execute("SELECT hash FROM eventos WHERE hash IS NOT NULL"
+                                    " ORDER BY id DESC LIMIT 1").fetchone()
+        except sqlite3.OperationalError:
+            # Banco de antes da trilha, ainda sem inicializar(): grava como antes.
+            conn.execute("INSERT INTO eventos (nivel, origem, mensagem, detalhe_json, ocorrido_em)"
+                         " VALUES (?,?,?,?,?)", (nivel, origem, mensagem, detalhe_json, momento))
+            return
         conn.execute(
-            "INSERT INTO eventos (nivel, origem, mensagem, detalhe_json, ocorrido_em)"
-            " VALUES (?,?,?,?,?)",
-            (nivel, origem, mensagem,
-             json.dumps(detalhe, ensure_ascii=False) if detalhe else None, agora()),
-        )
+            "INSERT INTO eventos (nivel, origem, mensagem, detalhe_json, ocorrido_em, ator, hash)"
+            " VALUES (?,?,?,?,?,?,?)",
+            (nivel, origem, mensagem, detalhe_json, momento, ator,
+             _hash_do_evento(anterior["hash"] if anterior else None, nivel, origem, mensagem,
+                             detalhe_json, momento, ator)))
+
+
+def verificar_trilha() -> dict:
+    """Refaz o encadeamento. Devolve o total, quantos eventos são de antes da
+    trilha (sem hash, no começo), o id da primeira linha que não confere
+    (ou None) e o último hash."""
+    anterior, sem_hash, total, quebra = None, 0, 0, None
+    with conectar() as conn:
+        for l in conn.execute("SELECT * FROM eventos ORDER BY id"):
+            total += 1
+            if l["hash"] is None:
+                if anterior is None:
+                    sem_hash += 1
+                    continue
+                quebra = l["id"]
+                break
+            esperado = _hash_do_evento(anterior, l["nivel"], l["origem"], l["mensagem"],
+                                       l["detalhe_json"], l["ocorrido_em"], l["ator"])
+            if esperado != l["hash"]:
+                quebra = l["id"]
+                break
+            anterior = l["hash"]
+    return {"eventos": total, "sem_hash": sem_hash, "quebra": quebra, "ultimo_hash": anterior}

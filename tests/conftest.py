@@ -184,6 +184,10 @@ def isolamento(tmp_path, monkeypatch):
     monkeypatch.setattr(worker, "PASTA_ORDENS", tmp_path / "ordens_de_compra")
     monkeypatch.setattr(seguranca, "_states", {})
     monkeypatch.setattr(seguranca, "_falhas_por_ip", {})
+    # O cli.main() de um teste define o ator da trilha para a thread; o
+    # próximo teste começa sem ator.
+    from db import definir_ator
+    definir_ator(None)
 
     ambiente = dict(os.environ)
     preparar()
