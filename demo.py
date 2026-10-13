@@ -7,6 +7,39 @@ from core import aprovacao, dinheiro
 from worker import analisar_novos, montar_ordens_de_compra, EXECUTORES
 
 inicializar()
+
+# Trava (achado S-81 da auditoria de 06/10/2026): o demo apaga pedidos,
+# produtos, fornecedores e a fila. Só faz isso num banco vazio ou que só tem
+# os próprios dados de exemplo; com qualquer outro dado, recusa, a menos que
+# a pessoa peça com --apagar-dados-existentes.
+SKUS_DEMO = ("ORG-001", "LUM-114", "SUP-300")
+PEDIDOS_DEMO = ("2000000001", "2000000002", "2000000003", "2000000004")
+
+
+def _dados_que_nao_sao_do_demo(c) -> dict:
+    marcas = lambda n: ",".join("?" * n)
+    return {k: v for k, v in {
+        "pedidos": c.execute(f"SELECT COUNT(*) FROM pedidos WHERE NOT (marketplace = 'mercadolivre'"
+                             f" AND id_externo IN ({marcas(len(PEDIDOS_DEMO))}))",
+                             PEDIDOS_DEMO).fetchone()[0],
+        "produtos": c.execute(f"SELECT COUNT(*) FROM produtos WHERE sku NOT IN ({marcas(len(SKUS_DEMO))})",
+                              SKUS_DEMO).fetchone()[0],
+        "fornecedores": c.execute("SELECT COUNT(*) FROM fornecedores WHERE NOT (id IN (1, 2)"
+                                  " AND nome IN ('Fábrica Aurora', 'Metalpar'))").fetchone()[0],
+        "itens da fila que não são compra": c.execute(
+            "SELECT COUNT(*) FROM aprovacoes WHERE tipo != 'compra_fornecedor'").fetchone()[0],
+    }.items() if v}
+
+
+with conectar() as c:
+    alheios = _dados_que_nao_sao_do_demo(c)
+if alheios and "--apagar-dados-existentes" not in sys.argv[1:]:
+    print("O exemplo não foi carregado: este banco já tem dados que não são do demo ("
+          + ", ".join(f"{n} {k}" for k, n in alheios.items()) + ").")
+    print("O demo apagaria tudo isso. Para apagar mesmo assim, rode:"
+          " python demo.py --apagar-dados-existentes")
+    sys.exit(2)
+
 with conectar() as c:
     c.execute("DELETE FROM transicoes"); c.execute("DELETE FROM aprovacoes")
     c.execute("DELETE FROM pedidos"); c.execute("DELETE FROM produtos"); c.execute("DELETE FROM fornecedores")

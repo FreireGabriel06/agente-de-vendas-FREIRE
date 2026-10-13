@@ -428,12 +428,26 @@ def apagar_tudo() -> int:
 
 
 def listar() -> list[dict]:
-    """Provedor, nome e data de cada entrada. Nunca o valor."""
-    with conectar() as conn:
-        conn.execute(SCHEMA_COFRE)
+    """Provedor, nome e data de cada entrada. Nunca o valor.
+
+    Só lê: não cria o banco nem a tabela. Rodado por engano contra a pasta de
+    dados errada, não deixa rastro (achado S-81 da auditoria de 06/10/2026;
+    foi assim que o incidente de 30/09 criou a tabela no banco real)."""
+    caminho = Path(config.config.db_path)
+    if not caminho.exists():
+        return []
+    conn = sqlite3.connect(f"{caminho.resolve().as_uri()}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        existe = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table'"
+                              " AND name='credenciais'").fetchone()
+        if not existe:
+            return []
         linhas = conn.execute(
             "SELECT provedor, nome, atualizado_em FROM credenciais"
             " ORDER BY provedor, nome").fetchall()
+    finally:
+        conn.close()
     return [dict(l) for l in linhas]
 
 

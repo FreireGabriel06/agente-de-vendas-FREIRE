@@ -469,6 +469,10 @@ async def api_salvar_config(request: Request):
     chaves = {k: str(v).strip() for k, v in corpo.items() if k in permitidas and str(v).strip()}
     if not chaves:
         raise HTTPException(400, "Nada para salvar.")
+    for chave, valor in chaves.items():
+        problema = configurar.problema_na_chave(chave, valor)
+        if problema:
+            raise HTTPException(400, problema)
     try:
         destino = configurar.gravar_env(chaves)
     except cofre.ErroCofre as e:
