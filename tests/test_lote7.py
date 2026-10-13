@@ -293,7 +293,7 @@ def test_worker_com_credenciais_sincroniza(amazon_falsa, monkeypatch):
 
     resumo = worker.sincronizar_amazon()
 
-    assert resumo["pedidos"] == 1
+    assert resumo["pedidos"]["pedidos"] == 1
 
 
 # ------------------------------------------------------------ autorização pelo site
@@ -459,8 +459,8 @@ def test_painel_mostra_pedidos_com_itens_e_sem_comprador(sessao, amazon_falsa):
     p = r.json()["pedidos"][0]
     assert p["amazon_order_id"] == oid and p["total_dec"] == "19.99" and len(p["itens"]) == 2
     assert "comprador" not in r.text.lower() and "Nome Falso" not in r.text
-    estado = cliente.get("/api/amazon/sincronizacao").json()
-    assert estado["resultado"] == "ok"
+    fontes = {f["fonte"]: f for f in cliente.get("/api/amazon/sincronizacao").json()["fontes"]}
+    assert fontes["amazon_pedidos"]["resultado"] == "ok"
 
 
 # ------------------------------------------------------------ CSRF de associação de conta

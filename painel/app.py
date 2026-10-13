@@ -510,6 +510,16 @@ async def api_concluir_amazon(request: Request):
     return {"ok": True, "detalhe": "Amazon conectada."}
 
 
+@app.get("/api/amazon/anuncios")
+def api_amazon_anuncios():
+    """Anúncios da Amazon com status, preço e as quantidades conhecidas."""
+    with conectar() as conn:
+        return {"anuncios": [dict(l) for l in conn.execute(
+            "SELECT sku, asin, titulo, status, quantidade_propria, fba_disponivel, fba_total,"
+            " preco_dec, preco_moeda, atualizado_na_amazon, visto_em, estoque_fba_em"
+            " FROM amazon_anuncios ORDER BY sku")]}
+
+
 @app.get("/api/amazon/pedidos")
 def api_amazon_pedidos(limite: int = 100):
     """Pedidos lidos da Amazon (monitoramento). Sem dado de comprador."""
@@ -531,7 +541,15 @@ def api_amazon_pedidos(limite: int = 100):
 def api_amazon_sincronizacao():
     """Cursor, última tentativa, último sucesso e resultado da sincronização."""
     from core import sincronizacao
-    return sincronizacao.estado() or {"fonte": sincronizacao.FONTE, "resultado": "nunca rodou"}
+    return {"fontes": sincronizacao.estados()}
+
+
+@app.get("/api/alertas")
+def api_alertas(todos: bool = False):
+    """Alertas abertos (ou os últimos 200, com os resolvidos, se todos=true).
+    Cada um traz o horário do último dado válido."""
+    from core import alertas
+    return {"alertas": alertas.listar(so_abertos=not todos)}
 
 
 @app.post("/api/configuracao/salvar")

@@ -308,6 +308,11 @@ class Config:
     # na importação, quando o .env ainda não tinha sido lido.
     porta_painel: int = _inteiro("PORTA_PAINEL", 8777, 1, 65535)
     intervalo_worker: int = _inteiro("INTERVALO_WORKER", 300, INTERVALO_MINIMO)
+    # Alertas (lote 8): estoque disponível igual ou abaixo deste número abre
+    # "estoque baixo"; dado sem sincronização bem-sucedida há mais destas horas
+    # abre "dado velho".
+    estoque_minimo: int = _inteiro("ESTOQUE_MINIMO", 3, 0, 1_000_000)
+    alerta_dado_velho_horas: int = _inteiro("ALERTA_DADO_VELHO_HORAS", 6, 1, 24 * 30)
 
 
 config = Config()

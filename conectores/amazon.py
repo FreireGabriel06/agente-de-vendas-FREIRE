@@ -29,6 +29,7 @@ Fontes (conferidas em 13/10/2026):
   client_secret; cabeçalho Referrer-Policy: no-referrer.
 Nada disso foi validado contra uma conta real ainda.
 """
+import json
 import os
 import random
 import time
@@ -52,7 +53,14 @@ TAMANHO_PAGINA = 100  # máximo aceito por getOrders
 
 
 class ErroAmazon(Exception):
-    pass
+    def __init__(self, mensagem: str, status: int | None = None):
+        super().__init__(mensagem)
+        self.status = status
+
+
+class ErroAutorizacaoAmazon(ErroAmazon):
+    """A LWA recusou o refresh token (autorização revogada ou vencida): só
+    autorizar o app de novo resolve. Vira o alerta de conexão vencida."""
 
 
 def _codigo_do_erro(resposta) -> str:
@@ -130,9 +138,13 @@ class Amazon:
             "client_id": self.cfg.lwa_client_id,
             "client_secret": self.cfg.lwa_client_secret,
         }, timeout=20)
+        if r.status_code in (400, 401):
+            raise ErroAutorizacaoAmazon(
+                f"A Amazon recusou a autorização ({r.status_code}, {_codigo_do_erro(r)}). "
+                "Autorize o app de novo pelo painel.")
         if r.status_code != 200:
             raise ErroAmazon(f"Falha no LWA ({r.status_code}, {_codigo_do_erro(r)}). "
-                             "Confira as credenciais ou autorize o app de novo.")
+                             "Tente de novo mais tarde.")
         dados = r.json()
         self._access_token = dados["access_token"]
         self._expira_em = time.time() + dados.get("expires_in", 3600) - 120
@@ -198,8 +210,11 @@ class Amazon:
                 kwargs["headers"] = {k: v for k, v in headers.items() if k != "x-amz-access-token"}
                 continue
             if r.status_code >= 400:
-                raise ErroAmazon(f"{operacao} -> HTTP {r.status_code} ({_codigo_do_erro(r)})")
-            return r.json() if r.text else {}
+                raise ErroAmazon(f"{operacao} -> HTTP {r.status_code} ({_codigo_do_erro(r)})",
+                                 r.status_code)
+            # Números do JSON em Decimal (o Money da Listings API traz amount
+            # numérico): nada de dinheiro passa por float.
+            return json.loads(r.text, parse_float=Decimal) if r.text else {}
         raise ErroAmazon(f"{operacao}: sem resposta válida depois de {TENTATIVAS} tentativas")
 
     def paginas_de_pedidos(self, atualizados_desde: str):
@@ -235,6 +250,38 @@ class Amazon:
             params = {"NextToken": proximo}
 
 
+    def paginas_de_anuncios(self, seller_id: str):
+        """Gera páginas de searchListingsItems (Listings Items 2021-08-01):
+        resumo, oferta e quantidade disponível de cada SKU, 20 por página,
+        seguindo pagination.nextToken."""
+        params = {"marketplaceIds": self.cfg.marketplace_id,
+                  "includedData": "summaries,offers,fulfillmentAvailability",
+                  "pageSize": 20}
+        while True:
+            dados = self._req("GET", f"/listings/2021-08-01/items/{seller_id}",
+                              "searchListingsItems", params=params)
+            yield dados.get("items") or []
+            proximo = (dados.get("pagination") or {}).get("nextToken")
+            if not proximo:
+                return
+            params = {**params, "pageToken": proximo}
+
+    def paginas_de_estoque_fba(self):
+        """Gera páginas de getInventorySummaries (FBA Inventory v1) com os
+        detalhes por quantidade. O nextToken vence 30 s depois de criado."""
+        params = {"details": "true", "granularityType": "Marketplace",
+                  "granularityId": self.cfg.marketplace_id,
+                  "marketplaceIds": self.cfg.marketplace_id}
+        while True:
+            dados = self._req("GET", "/fba/inventory/v1/summaries", "getInventorySummaries",
+                              params=params)
+            yield (dados.get("payload") or {}).get("inventorySummaries") or []
+            proximo = (dados.get("pagination") or {}).get("nextToken")
+            if not proximo:
+                return
+            params = {**params, "nextToken": proximo}
+
+
 def normalizar_pedido(bruto: dict) -> dict:
     """Só o que o monitoramento usa. BuyerInfo, ShippingAddress e qualquer
     outro dado do comprador ficam de fora de propósito."""
@@ -263,4 +310,41 @@ def normalizar_item(bruto: dict) -> dict:
         "quantidade_enviada": bruto.get("QuantityShipped"),
         "preco_dec": dinheiro.texto(preco) if preco is not None else None,
         "preco_moeda": moeda,
+    }
+
+
+def normalizar_anuncio(bruto: dict, marketplace_id: str) -> dict:
+    """Um SKU da Listings API no marketplace configurado."""
+    resumo = next((r for r in bruto.get("summaries") or []
+                   if r.get("marketplaceId") == marketplace_id), {})
+    oferta = next((o for o in bruto.get("offers") or []
+                   if o.get("marketplaceId") == marketplace_id and o.get("offerType", "B2C") == "B2C"),
+                  {})
+    preco = oferta.get("price") or {}
+    valor = preco.get("amount")
+    valor = dinheiro.do_texto(str(valor)) if valor is not None else None
+    # DEFAULT é o estoque do próprio vendedor (MFN); a FBA vem da FBA Inventory API.
+    proprio = next((f for f in bruto.get("fulfillmentAvailability") or []
+                    if f.get("fulfillmentChannelCode") == "DEFAULT"), None)
+    quantidade = proprio.get("quantity") if proprio else None
+    return {
+        "sku": str(bruto.get("sku") or ""),
+        "asin": resumo.get("asin"),
+        "titulo": resumo.get("itemName"),
+        "status": ",".join(resumo.get("status") or []),
+        "quantidade_propria": quantidade if isinstance(quantidade, int) else None,
+        "preco_dec": dinheiro.texto(valor) if valor is not None else None,
+        "preco_moeda": dinheiro.moeda_lida(preco.get("currencyCode")),
+        "atualizado_na_amazon": resumo.get("lastUpdatedDate"),
+    }
+
+
+def normalizar_estoque_fba(bruto: dict) -> dict:
+    detalhes = bruto.get("inventoryDetails") or {}
+    disponivel = detalhes.get("fulfillableQuantity")
+    total = bruto.get("totalQuantity")
+    return {
+        "sku": str(bruto.get("sellerSku") or ""),
+        "fba_disponivel": disponivel if isinstance(disponivel, int) else None,
+        "fba_total": total if isinstance(total, int) else None,
     }
