@@ -1,0 +1,19 @@
+# Varredura de segredos do CI (.github/workflows/tests.yml, job "segredos").
+# Regras padrão do gitleaks. Exceção só para valor sintético conhecido, e só
+# em tests/, nunca para uma pasta inteira.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Valores sintéticos dos testes (conferidos em 13/10/2026)"
+condition = "AND"
+paths = ['''^tests/''']
+regexTarget = "line"
+regexes = [
+  # tests/test_cofre.py: um valor distinto por segredo do painel.
+  ''':\s*"valor-[a-z-]+-[0-9]{3}"''',
+  # tests/test_cofre.py: arquivo de token legado truncado de propósito.
+  '''"(access|refresh)_token": "(at|rt)-truncado-segredo-8[12]"''',
+  # tests/test_lote5.py: "api" seguido de um nome de campo, não de um valor.
+  '''cadastrar\(canal="api", categoria_regulada=''',
+]

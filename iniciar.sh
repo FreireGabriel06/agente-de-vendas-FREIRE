@@ -50,7 +50,7 @@ source .venv/bin/activate
 if [ ! -f ".venv/.instalado" ]; then
   echo "  Instalando dependências (leva 1 a 3 minutos)..."
   pip install --quiet --upgrade pip
-  pip install --quiet -r requirements.txt || { erro "Falha ao instalar dependências."; exit 1; }
+  pip install --quiet -r requirements.txt -c constraints.txt || { erro "Falha ao instalar dependências."; exit 1; }
   touch .venv/.instalado
   ok "Dependências instaladas"
 else
