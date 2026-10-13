@@ -115,6 +115,10 @@ desktop.ini
 # processes, .trava_ciclo keeps worker cycles one at a time.
 .trava_tokens.*
 .trava_*
+# LGPD eliminations (pseudonymous buyer hashes) replayed after a backup restore.
+.eliminacoes_lgpd.jsonl
+# Encrypted backups (database plus keys).
+*.agvbkp
 # Legacy plaintext token files (before the credential vault). Never commit.
 .token_ml.json
 .token_shopee.json

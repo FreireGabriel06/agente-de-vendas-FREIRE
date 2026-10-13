@@ -169,6 +169,7 @@ def isolamento(tmp_path, monkeypatch):
         monkeypatch.setattr(cfg, nome, dataclasses.replace(getattr(cfg, nome)))
     monkeypatch.setattr(configurar, "ARQ_ENV", tmp_path / ".env")
     monkeypatch.setattr(privacidade, "ARQ_CHAVE", tmp_path / ".chave_lgpd")
+    monkeypatch.setattr(privacidade, "ARQ_ELIMINACOES", tmp_path / ".eliminacoes_lgpd.jsonl")
     monkeypatch.setattr(cofre, "ARQ_CHAVE", tmp_path / ".chave_cofre")
     monkeypatch.setattr(cofre, "ARQ_TRAVA", tmp_path / ".trava_tokens")
     # Tokens que ficaram só na memória não passam de um teste para o outro.

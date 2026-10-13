@@ -14,7 +14,7 @@ a = Analysis(
         'uvicorn.protocols.websockets.auto', 'uvicorn.lifespan.on',
         'conectores.mercadolivre', 'conectores.amazon', 'conectores.shopee',
         'core.estados', 'core.aprovacao', 'core.conformidade', 'core.privacidade',
-        'core.cofre', 'core.cadastro', 'core.dinheiro', 'core.sincronizacao', 'core.alertas',
+        'core.cofre', 'core.cadastro', 'core.dinheiro', 'core.sincronizacao', 'core.alertas', 'core.backup',
         'inteligencia.precificacao', 'inteligencia.tendencias',
         'atendimento.persona', 'atendimento.bot', 'atendimento.claude_api', 'worker',
     ],
