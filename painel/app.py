@@ -174,6 +174,8 @@ def api_aprovar(aprovacao_id: int, request: Request):
         resultado = aprovacao.aprovar(aprovacao_id, EXECUTORES)
     except aprovacao.BloqueadoPelaConformidade as e:
         raise HTTPException(409, str(e))
+    except aprovacao.JaDecidida:
+        raise HTTPException(409, "Esta pendência já foi decidida por outra chamada.")
     except Exception as e:
         raise HTTPException(500, str(e))
     registrar_evento("info", "aprovacao",
@@ -185,7 +187,12 @@ def api_aprovar(aprovacao_id: int, request: Request):
 async def api_recusar(aprovacao_id: int, request: Request):
     corpo = await request.json() if await request.body() else {}
     motivo = corpo.get("motivo", "recusado no painel")
-    aprovacao.recusar(aprovacao_id, f"{motivo} (por {request.state.operador})")
+    if aprovacao.obter_pendente(aprovacao_id) is None:
+        raise HTTPException(404, "Pendência não encontrada")
+    try:
+        aprovacao.recusar(aprovacao_id, f"{motivo} (por {request.state.operador})")
+    except aprovacao.JaDecidida:
+        raise HTTPException(409, "Esta pendência já foi decidida por outra chamada.")
     return {"ok": True}
 
 

@@ -116,17 +116,36 @@ def checar(aprovacao: Aprovacao) -> conformidade.Resultado:
     return conformidade.verificar_pendencia(aprovacao.tipo, aprovacao.payload)
 
 
-def _decidir(aprovacao_id: int, status: str, resultado: str = ""):
+class JaDecidida(ValueError):
+    """A pendência não está mais 'pendente': outra aprovação ou recusa chegou
+    antes, ou o id não existe. Nada foi executado nem alterado por esta chamada.
+    É ValueError para quem já tratava o erro antigo."""
+
+
+# Transições permitidas (achados N-01/N-02 da auditoria de 05/10/2026):
+#   pendente -> aprovada   só por uma aprovação (UPDATE condicional, rowcount 1)
+#   pendente -> recusada   só a partir de 'pendente'
+#   aprovada -> executada | erro   só pelo executor que reservou o item
+def _mudar(aprovacao_id: int, de: str, para: str, resultado: str | None = None) -> bool:
     with conectar() as conn:
-        conn.execute(
-            "UPDATE aprovacoes SET status = ?, resultado = ?, decidido_em = ?"
-            " WHERE id = ? AND status IN ('pendente','aprovada')",
-            (status, resultado, agora(), aprovacao_id),
+        cur = conn.execute(
+            "UPDATE aprovacoes SET status = ?, resultado = COALESCE(?, resultado),"
+            " decidido_em = ? WHERE id = ? AND status = ?",
+            (para, resultado, agora(), aprovacao_id, de),
         )
+        return cur.rowcount == 1
+
+
+def _concluir(aprovacao_id: int, status: str, resultado: str) -> None:
+    if not _mudar(aprovacao_id, "aprovada", status, resultado):
+        registrar_evento("atencao", "aprovacao",
+                         f"Ação {aprovacao_id}: estado divergente ao concluir como '{status}'. "
+                         "Confira no marketplace antes de repetir.")
 
 
 def recusar(aprovacao_id: int, motivo: str = ""):
-    _decidir(aprovacao_id, "recusada", motivo)
+    if not _mudar(aprovacao_id, "pendente", "recusada", motivo):
+        raise JaDecidida(f"Aprovação {aprovacao_id} não existe ou já foi decidida")
     registrar_evento("info", "aprovacao", f"Ação {aprovacao_id} recusada: {motivo}")
 
 
@@ -143,7 +162,7 @@ def aprovar(aprovacao_id: int, executores: dict[str, Callable[[dict], str]]):
     """
     item = obter_pendente(aprovacao_id)
     if item is None:
-        raise ValueError(f"Aprovação {aprovacao_id} não existe ou já foi decidida")
+        raise JaDecidida(f"Aprovação {aprovacao_id} não existe ou já foi decidida")
 
     executor = executores.get(item.tipo)
     if executor is None:
@@ -155,10 +174,12 @@ def aprovar(aprovacao_id: int, executores: dict[str, Callable[[dict], str]]):
         registrar_evento("atencao", "aprovacao", f"Ação {aprovacao_id} não executada. {erro}")
         raise erro
 
-    _decidir(aprovacao_id, "aprovada")
+    # Reserva atômica: das aprovações simultâneas, só uma passa daqui.
+    if not _mudar(aprovacao_id, "pendente", "aprovada"):
+        raise JaDecidida(f"Aprovação {aprovacao_id} não existe ou já foi decidida")
     try:
         resultado = executor(item.payload)
-        _decidir(aprovacao_id, "executada", resultado)
+        _concluir(aprovacao_id, "executada", resultado)
         if foi_simulado(resultado):
             registrar_evento("info", "aprovacao",
                              f"Ação {aprovacao_id} ({item.tipo}) simulada: nada saiu do sistema")
@@ -166,7 +187,7 @@ def aprovar(aprovacao_id: int, executores: dict[str, Callable[[dict], str]]):
             registrar_evento("info", "aprovacao", f"Ação {aprovacao_id} ({item.tipo}) executada")
         return resultado
     except Exception as e:
-        _decidir(aprovacao_id, "erro", str(e)[:500])
+        _concluir(aprovacao_id, "erro", str(e)[:500])
         registrar_evento("erro", "aprovacao", f"Ação {aprovacao_id} falhou: {e}")
         raise
 
