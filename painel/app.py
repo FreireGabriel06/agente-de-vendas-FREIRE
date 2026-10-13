@@ -718,6 +718,7 @@ def _pagina_login() -> str:
         color:#EDF0EC;cursor:pointer;font-weight:600}
  .erro{margin:0;color:#8C2F1B;font-size:.88rem;min-height:1.2em}
  input:focus-visible,button:focus-visible{outline:2px solid #14614A;outline-offset:2px}
+ [hidden]{display:none}
 </style></head><body>
 <form id="entrar">
   <h1>Agente Comercial</h1>

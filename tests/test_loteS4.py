@@ -249,3 +249,6 @@ def test_recusa_e_redirecionamento_tambem_levam_os_cabecalhos(cliente):
 def test_pagina_de_login_tem_campo_do_codigo(cliente):
     texto = cliente.get("/login").text
     assert 'id="codigo"' in texto and 'autocomplete="one-time-code"' in texto
+    # label{display:grid} venceria o atributo hidden sem esta regra, e o campo
+    # do código apareceria antes de a senha conferir.
+    assert 'id="campo-codigo" hidden' in texto and "[hidden]{display:none}" in texto
