@@ -107,6 +107,7 @@ What the automated suite covers, and how to run it, is under [Tests](#tests).
 | Money as `Decimal` with an explicit ISO 4217 currency for the product cost, the supplier minimum order and the order sale and cost amounts: canonical decimal text plus a currency column next to their old `REAL` columns, old databases migrated with the currency left empty ("moeda não informada"); dates written in UTC with the offset | `core/dinheiro.py`, `db.py`, `worker.py` | Tested |
 | Orders stuck in `PROBLEMA` after a data fix (product cost or currency, weight, supplier, deactivated product, missing sale currency) go back to analysis with `cli.py pedido reanalisar` or `POST /api/pedidos/{id}/reanalisar`, only when no purchase order can have gone out | `worker.py`, `cli.py`, `painel/app.py` | Tested |
 | Panel login: one operator, server-side session, CSRF token in a header | `core/seguranca.py`, `painel/app.py` | Tested |
+| Marketplace errors without the response body or the full URL: the message keeps the method, the path without its query, the HTTP status and the marketplace's error code when it looks like one; a network failure keeps only the exception type (the Shopee URL carries the access token). The approval queue, events and the panel's HTTP 500 show only messages written by the project; any other exception shows only its type, with the stack trace (no message) in the event | `core/erros.py`, `conectores/`, `core/aprovacao.py`, `painel/app.py` | Tested with fake marketplaces |
 | Second factor by authenticator app (TOTP, RFC 6238, standard library only): secret in the encrypted vault, a code works once, a wrong code counts toward the lockout; operator deactivation ends every session at once — see [Panel security](#panel-security) | `core/seguranca.py`, `cli.py`, `painel/app.py` | Tested |
 | HTTPS: the panel serves TLS itself (`TLS_CERT`, `TLS_CHAVE`) or trusts `X-Forwarded-Proto` only from a reverse proxy (`PROXY_HTTPS`, `PROXY_IPS`); it refuses to start on a non-local address without one of them; `Secure` session cookie and HSTS under HTTPS; `nosniff`, `X-Frame-Options: DENY` and `Referrer-Policy` on every response | `executar.py`, `painel/app.py` | Tested |
 | Panel exposed to a network: login limited per address (5 errors in 15 minutes → HTTP 429) and per account (20 consecutive errors → 15-minute lock), so one attacker cannot lock the operator out; an unknown operator costs the same password check as a wrong password; session id stored only as SHA-256; `Host` must be local or listed in `HOSTS_PAINEL`; Content-Security-Policy and `Cache-Control: no-store` on every response; login only as JSON; no OpenAPI schema; numeric inputs checked with ranges — see [Panel security](#panel-security) | `core/seguranca.py`, `painel/app.py`, `executar.py` | Tested |
@@ -799,7 +800,10 @@ with a live account yet.
   panel session that started the authorization, once, within 10 minutes;
   pasting only the code is refused.
 - **Shopee:** paste the Partner ID, Partner Key and Shop ID, then authorize.
-  The authorization link expires after 5 minutes.
+  The authorization link expires after 5 minutes. Shopee does not send back
+  a `state`, so the return is accepted only from the panel session that
+  opened the authorization, once, within 10 minutes, and only with a numeric
+  `shop_id`.
 - **Amazon:** register the app in the Solution Provider Portal (a public
   developer registration, reviewed by Amazon, is needed to connect other
   sellers). Save the LWA client ID and secret, the app ID (`AMZ_APPLICATION_ID`)

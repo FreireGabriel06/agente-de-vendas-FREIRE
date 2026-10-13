@@ -29,9 +29,10 @@ import hmac
 import time
 
 import requests
+from requests import RequestException
 
 from config import DATA_DIR
-from core import cofre
+from core import cofre, erros
 import os
 
 PROVEDOR = "shopee"
@@ -43,8 +44,29 @@ HOST_PROD = "https://partner.shopeemobile.com"
 HOST_TESTE = "https://partner.test-stable.shopeemobile.com"
 
 
-class ErroShopee(Exception):
-    pass
+class ErroShopee(erros.MensagemSegura):
+    """Mensagem montada aqui: método, caminho, status e código da Shopee;
+    nunca o corpo nem a URL, que leva o access_token na query
+    (core/erros.py)."""
+
+
+def _chamar(metodo: str, caminho: str, enviar) -> dict:
+    """Chama a Shopee (enviar() faz a requisição) e devolve o JSON. Erro de
+    rede, resposta sem JSON ou campo "error" viram ErroShopee só com método,
+    caminho, status e código."""
+    try:
+        r = enviar()
+    except RequestException as e:
+        raise ErroShopee(erros.falha_de_rede(metodo, caminho, e)) from None
+    try:
+        d = r.json()
+    except ValueError:
+        raise ErroShopee(erros.descrever(metodo, caminho, r.status_code) + ", resposta sem JSON") from None
+    if not isinstance(d, dict):
+        raise ErroShopee(erros.descrever(metodo, caminho, r.status_code) + ", resposta inesperada")
+    if d.get("error"):
+        raise ErroShopee(erros.descrever(metodo, caminho, r.status_code, d.get("error")))
+    return d
 
 
 class Shopee:
@@ -124,16 +146,13 @@ class Shopee:
         """Troca o code da autorização pelo par access/refresh token."""
         caminho = "/api/v2/auth/token/get"
         ts = int(time.time())
-        r = requests.post(
+        d = _chamar("POST", caminho, lambda: requests.post(
             f"{self.host}{caminho}",
             params={"partner_id": self.partner_id, "timestamp": ts,
                     "sign": self._assinar(caminho, ts, com_loja=False)},
             json={"code": code, "partner_id": self.partner_id, "shop_id": self.shop_id},
             timeout=25,
-        )
-        d = r.json()
-        if d.get("error"):
-            raise ErroShopee(f"{d['error']}: {d.get('message','')}")
+        ))
         self._salvar(d)
         return d
 
@@ -160,17 +179,17 @@ class Shopee:
             cofre.conferir()
             caminho = "/api/v2/auth/access_token/get"
             ts = int(time.time())
-            r = requests.post(
-                f"{self.host}{caminho}",
-                params={"partner_id": self.partner_id, "timestamp": ts,
-                        "sign": self._assinar(caminho, ts, com_loja=False)},
-                json={"refresh_token": refresh_token,
-                      "partner_id": self.partner_id, "shop_id": self.shop_id},
-                timeout=25,
-            )
-            d = r.json()
-            if d.get("error"):
-                raise ErroShopee(f"Falha ao renovar: {d['error']} {d.get('message','')}")
+            try:
+                d = _chamar("POST", caminho, lambda: requests.post(
+                    f"{self.host}{caminho}",
+                    params={"partner_id": self.partner_id, "timestamp": ts,
+                            "sign": self._assinar(caminho, ts, com_loja=False)},
+                    json={"refresh_token": refresh_token,
+                          "partner_id": self.partner_id, "shop_id": self.shop_id},
+                    timeout=25,
+                ))
+            except ErroShopee as e:
+                raise ErroShopee(f"Falha ao renovar: {e}") from None
             # O refresh antigo acabou de deixar de valer: o par novo fica na
             # memória do processo e vai para o cofre, sem exceção no caminho.
             self._salvar(d)
@@ -200,11 +219,8 @@ class Shopee:
             "sign": self._pelo_cofre(lambda: self._assinar(caminho, ts)),
         }
         base_params.update(params or {})
-        r = requests.request(metodo, f"{self.host}{caminho}",
-                             params=base_params, json=corpo, timeout=30)
-        d = r.json()
-        if d.get("error"):
-            raise ErroShopee(f"{caminho} -> {d['error']}: {d.get('message','')}")
+        d = _chamar(metodo, caminho, lambda: requests.request(
+            metodo, f"{self.host}{caminho}", params=base_params, json=corpo, timeout=30))
         return d.get("response", d)
 
     def pedidos_recentes(self, janela_horas: int = 24) -> list[dict]:

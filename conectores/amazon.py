@@ -36,9 +36,10 @@ import time
 from decimal import Decimal
 
 import requests
+from requests import RequestException
 
 from config import config
-from core import cofre, dinheiro
+from core import cofre, dinheiro, erros
 from db import registrar_evento
 
 URL_LWA = "https://api.amazon.com/auth/o2/token"
@@ -52,7 +53,10 @@ ESPERA_BASE = 2.0
 TAMANHO_PAGINA = 100  # máximo aceito por getOrders
 
 
-class ErroAmazon(Exception):
+class ErroAmazon(erros.MensagemSegura):
+    """Mensagem montada aqui: operação, status e código da SP-API ou da LWA;
+    nunca o corpo nem a URL (core/erros.py)."""
+
     def __init__(self, mensagem: str, status: int | None = None):
         super().__init__(mensagem)
         self.status = status
@@ -132,12 +136,15 @@ class Amazon:
                 "Seller Central aprovada e de um app registrado no Developer "
                 "Central antes de salvar as credenciais AMZ_* no painel"
             )
-        r = requests.post(URL_LWA, data={
-            "grant_type": "refresh_token",
-            "refresh_token": self.cfg.refresh_token,
-            "client_id": self.cfg.lwa_client_id,
-            "client_secret": self.cfg.lwa_client_secret,
-        }, timeout=20)
+        try:
+            r = requests.post(URL_LWA, data={
+                "grant_type": "refresh_token",
+                "refresh_token": self.cfg.refresh_token,
+                "client_id": self.cfg.lwa_client_id,
+                "client_secret": self.cfg.lwa_client_secret,
+            }, timeout=20)
+        except RequestException as e:
+            raise ErroAmazon("Falha no LWA: " + erros.falha_de_rede("POST", URL_LWA, e)) from None
         if r.status_code in (400, 401):
             raise ErroAutorizacaoAmazon(
                 f"A Amazon recusou a autorização ({r.status_code}, {_codigo_do_erro(r)}). "
@@ -193,8 +200,11 @@ class Amazon:
             self._esperar_vez(operacao)
             headers = dict(kwargs.pop("headers", {}) or {})
             headers["x-amz-access-token"] = self.token
-            r = requests.request(metodo, f"{self.cfg.regiao_endpoint}{caminho}",
-                                 headers=headers, timeout=30, **kwargs)
+            try:
+                r = requests.request(metodo, f"{self.cfg.regiao_endpoint}{caminho}",
+                                     headers=headers, timeout=30, **kwargs)
+            except RequestException as e:
+                raise ErroAmazon(f"{operacao}: " + erros.falha_de_rede(metodo, caminho, e)) from None
             self._ultima[operacao] = time.monotonic()
             self._aprender_limite(operacao, r)
             if r.status_code in (429, 500, 502, 503, 504) and tentativa < TENTATIVAS - 1:

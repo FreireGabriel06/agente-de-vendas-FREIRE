@@ -63,6 +63,7 @@ from pathlib import Path
 from cryptography.fernet import Fernet, InvalidToken, MultiFernet
 
 import config
+from core.erros import MensagemSegura
 from db import agora, conectar, registrar_evento
 
 ARQ_CHAVE = config.DATA_DIR / ".chave_cofre"
@@ -105,7 +106,7 @@ SAIDA_SEM_CHAVE = ("Sem backup da chave, 'python cli.py cofre apagar --tudo' apa
                    "os marketplaces e digite os segredos de novo.")
 
 
-class ErroCofre(RuntimeError):
+class ErroCofre(RuntimeError, MensagemSegura):
     """Chave errada, ausente ou malformada, ou cofre ilegível. A mensagem
     nunca traz valor guardado nem chave."""
 

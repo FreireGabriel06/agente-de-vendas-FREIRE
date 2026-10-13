@@ -28,7 +28,6 @@ import json
 import os
 import threading
 import time
-import traceback
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -39,6 +38,7 @@ from db import conectar, agora, inicializar, registrar_evento
 from core import aprovacao, cadastro, cofre, conformidade, dinheiro, privacidade
 # A mesma trava de arquivo que o cofre usa para a renovação de tokens.
 from core.cofre import _soltar_arquivo, _trancar
+from core.erros import pilha_sem_mensagem
 from core.estados import Estado, transicionar
 from inteligencia import precificacao
 from conectores.mercadolivre import MercadoLivre, ErroMercadoLivre
@@ -740,10 +740,7 @@ EXECUTORES = {
 
 # ------------------------------------------------------------------ Laço
 
-def _pilha(erro: Exception) -> str:
-    """Arquivo, linha e código de cada quadro, sem a mensagem da exceção."""
-    quadros = traceback.format_list(traceback.extract_tb(erro.__traceback__))
-    return f"{type(erro).__name__}\n{''.join(quadros)}"[-2000:]
+_pilha = pilha_sem_mensagem
 
 
 # ------------------------------------------------------- Um ciclo de cada vez
