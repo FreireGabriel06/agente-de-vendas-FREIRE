@@ -17,8 +17,10 @@ Built with **FastAPI** and **SQLite** and operated from a local web panel.
 > seller accounts**. The panel requires a login, but with a single shared
 > operator and no HTTPS by default — keep it on `127.0.0.1`.
 
-The code targets Brazilian marketplaces today, Mercado Livre first. The
-[roadmap](#roadmap) moves the product to US marketplaces.
+The purchase flow targets Mercado Livre (Brazil). For Amazon.com (US) the
+service authorizes a seller account and syncs its orders read-only for
+monitoring. The [roadmap](#roadmap) moves the product to US and European
+marketplaces.
 
 ---
 
@@ -91,7 +93,7 @@ What the automated suite covers, and how to run it, is under [Tests](#tests).
 | Shipment tracking for confirmed and in-transit orders, reading the encrypted shipping reference through `core/privacidade.py` (first read per order logged) | `worker.py`, `core/privacidade.py` | Tested with a fake Mercado Livre client |
 | Niche research: Google Trends and Mercado Livre search | `inteligencia/tendencias.py` | Not validated |
 | Shopee: partner authorization with HMAC-signed calls, order listing | `conectores/shopee.py` | Not validated; used only by connection setup and test, not by the worker |
-| Amazon SP-API with Login with Amazon: order listing | `conectores/amazon.py` | Not validated; used only by the connection test, not by the worker |
+| Amazon SP-API, read-only: website authorization (consent with a session-bound `state`, log-in URI that returns the seller only to an Amazon domain, code exchanged within its 5 minutes, refresh token in the vault, `Referrer-Policy: no-referrer`) and incremental order sync (`getOrders` with `NextToken`, every item with `getOrderItems`, Decimal amounts with the Amazon currency, back-off on 429/5xx with `Retry-After` and the `x-amzn-RateLimit-Limit` rate, a cursor that moves only after a complete pass, no duplicates on re-runs). No buyer data is stored. Amazon orders never enter the supplier purchase flow | `conectores/amazon.py`, `core/sincronizacao.py`, `painel/`, `worker.py` | Tested against a fake SP-API; not validated with a live account |
 | Product and supplier registration without SQL: list, read, create, edit and deactivate (no delete) through the panel API and `cli.py produto` / `cli.py fornecedor`, one validation for both (pydantic): field errors in Portuguese (HTTP 422), duplicate SKU 409, unknown fields refused; the compliance confirmations are editable there — see [Products and suppliers](#products-and-suppliers) | `core/cadastro.py`, `painel/app.py`, `cli.py` | Tested; no panel screen yet |
 | Money as `Decimal` with an explicit ISO 4217 currency for the product cost, the supplier minimum order and the order sale and cost amounts: canonical decimal text plus a currency column next to their old `REAL` columns, old databases migrated with the currency left empty ("moeda não informada"); dates written in UTC with the offset | `core/dinheiro.py`, `db.py`, `worker.py` | Tested |
 | Orders stuck in `PROBLEMA` after a data fix (product cost or currency, weight, supplier, deactivated product, missing sale currency) go back to analysis with `cli.py pedido reanalisar` or `POST /api/pedidos/{id}/reanalisar`, only when no purchase order can have gone out | `worker.py`, `cli.py`, `painel/app.py` | Tested |
@@ -741,7 +743,8 @@ Reply drafts use the official `anthropic` Python SDK
 | `SHOPEE_REFRESH_TOKEN` | empty | Stored in the vault by the panel after authorization; a value here only seeds the vault |
 | `SHOPEE_SANDBOX` | `true` | Use the Shopee test environment |
 | `AMZ_LWA_CLIENT_ID`, `AMZ_LWA_CLIENT_SECRET`, `AMZ_REFRESH_TOKEN` | empty | Amazon SP-API credentials; the panel stores the secret and the refresh token in the vault |
-| `AMZ_MARKETPLACE_ID`, `AMZ_ENDPOINT` | Brazil marketplace, North America endpoint | Amazon marketplace and region |
+| `AMZ_MARKETPLACE_ID`, `AMZ_ENDPOINT` | Amazon.com (US, `ATVPDKIKX0DER`), North America endpoint | Amazon marketplace and region; they must match (Europe uses the EU endpoint) |
+| `AMZ_APPLICATION_ID`, `AMZ_REDIRECT_URI`, `AMZ_SELLER_CENTRAL`, `AMZ_APP_VERSAO` | empty, empty, `https://sellercentral.amazon.com`, empty | Website authorization: app ID, the HTTPS redirect URI registered in the app, the Seller Central of the marketplace, and `beta` only to test a draft app |
 | `ANTHROPIC_API_KEY` | empty | Reply drafting, stored in the vault by the panel; without it only fixed FAQ answers are queued and other questions are escalated |
 | `MODELO_CLAUDE` | `claude-opus-5-5` | Claude model for reply drafts ($4 / $20 per million input / output tokens); `claude-sonnet-5-5` costs $2 / $10. Your decision; the program never changes it (a refused request may be answered, and billed, by Anthropic's fallback model) |
 | `ESFORCO_CLAUDE` | `low` | Effort for reply drafts: `low`, `medium`, `high`, `xhigh` or `max`; it also sets `max_tokens` and the timeout; an unknown value falls back to `low` with a warning |
@@ -779,8 +782,16 @@ with a live account yet.
   pasting only the code is refused.
 - **Shopee:** paste the Partner ID, Partner Key and Shop ID, then authorize.
   The authorization link expires after 5 minutes.
-- **Amazon:** paste the LWA client ID, client secret and a refresh token issued
-  in Seller Central.
+- **Amazon:** register the app in the Solution Provider Portal (a public
+  developer registration, reviewed by Amazon, is needed to connect other
+  sellers). Save the LWA client ID and secret, the app ID (`AMZ_APPLICATION_ID`)
+  and the HTTPS redirect URI registered in the app (`AMZ_REDIRECT_URI`); set the
+  app's log-in URI to `/oauth/amazon/login` on the same host. Then authorize:
+  the seller consents in Seller Central, Amazon calls the log-in URI, the panel
+  sends the seller back to Amazon, and the redirect URI exchanges the code.
+  Without HTTPS on that address, paste the return URL into the panel
+  (`/api/configuracao/concluir-amazon`). The worker then reads orders every
+  cycle; `/api/amazon/pedidos` and `/api/amazon/sincronizacao` show them.
 
 **Testar conexão** calls the real API; for Claude it is a model lookup that
 costs no tokens. Secrets and tokens go to the encrypted
@@ -845,14 +856,15 @@ Sheet and the cryptography and secret-management chapters of OWASP ASVS 5.0.
 ## Known limitations
 
 - One shared operator, no roles and no HTTPS by default. Keep the panel on `127.0.0.1` until both exist.
-- Only Mercado Livre is automated; Shopee and Amazon stop at the connection test.
+- Mercado Livre drives the purchase flow. Amazon orders are synced read-only for monitoring and never enter the purchase flow (Amazon forbids a third party as the sender); the panel screen does not list them yet (the API does). Shopee stops at the connection test.
+- Connecting sellers other than yourself on Amazon needs a public developer registration and an app approved by Amazon; that review is outside this project's control.
 - No integration has been validated with a live seller account.
 - Purchase orders are text files, with or without simulation mode; nothing reaches suppliers.
 - Margins rely on average fees; confirm the real fees of each category.
 - Products, suppliers and their compliance confirmations are edited through the API or the CLI; the panel has no screen for them yet. `EMITE_NOTA_FISCAL` still lives in `.env` and needs a restart.
 - The margin is computed only in BRL, the currency of the Mercado Livre fee model; there is no currency conversion. A product or order without a recorded currency — anything saved before this version — gets no margin until the currency is set: the product's with `cli.py produto editar`, the order's with `cli.py pedido reanalisar ID --moeda-venda` (see [Upgrading an existing database](#upgrading-an-existing-database)).
 - The panel screen (`painel.html`) and `cli.py pendencias` still format every amount as R$: an order or queue item in another currency, or with no recorded currency, shows as R$ there. The API returns the currency next to the amount (`valor_bruto_dec` and `valor_bruto_moeda` in `/api/pedidos`, `moeda` in each `/api/pendencias` item; `null` means "moeda não informada"), but the screen does not show it yet.
-- Only the Mercado Livre connector records the order currency; the Shopee and Amazon connectors do not, and the worker does not use them yet. Other amount columns are still plain `REAL` without a currency: `anuncios.preco_venda`, `oportunidades.preco_mediano`, and `aprovacoes.valor`, where the worker writes the cost of each purchase it queues for the panel's exposure total (a BRL amount, since a purchase is built only after a BRL margin, or an amount without a recorded currency for an order analysed before this version).
+- The Mercado Livre and Amazon connectors record the order currency; the Shopee connector does not, and the worker does not use it yet. Other amount columns are still plain `REAL` without a currency: `anuncios.preco_venda`, `oportunidades.preco_mediano`, and `aprovacoes.valor`, where the worker writes the cost of each purchase it queues for the panel's exposure total (a BRL amount, since a purchase is built only after a BRL margin, or an amount without a recorded currency for an order analysed before this version).
 - Reply drafting has not been run against the live Claude API; it is tested with a fake client and with the real SDK over a mock transport.
 - The vault key sits on the same machine as the database (environment variable or `.chave_cofre`): it protects copies of the database, not a compromised computer. On Windows `.chave_cofre` inherits the folder's permissions.
 - A renewed refresh token that could not be saved lives only in the running process until a later save succeeds; restarting in that window means authorizing the account again. A warning event appears when this happens.
@@ -892,11 +904,12 @@ pytest.ini               test discovery and import path
 
 ## Roadmap
 
-Planned, in this order. None of it exists yet.
+Planned, in this order. Each item says what already exists.
 
-1. **US marketplace authorization:** Amazon Selling Partner API as an
-   application for third-party sellers, and eBay, starting in the Sandbox —
-   based on the official documentation.
+1. **US marketplace authorization:** Amazon website authorization and
+   read-only order sync exist and are tested against a fake SP-API; next is
+   validating them with a real account once Amazon approves the app, then eBay,
+   starting in the Sandbox — based on the official documentation.
 2. **Panel login**, then one end-to-end integration: seller consent,
    authenticated reads, storage, re-runs without duplicates and failure
    handling.

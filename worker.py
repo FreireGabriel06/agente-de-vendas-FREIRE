@@ -36,7 +36,7 @@ from pathlib import Path
 
 from config import config, DATA_DIR, avisar_pasta_de_dados
 from db import conectar, agora, inicializar, registrar_evento
-from core import aprovacao, cadastro, conformidade, dinheiro, privacidade
+from core import aprovacao, cadastro, cofre, conformidade, dinheiro, privacidade
 # A mesma trava de arquivo que o cofre usa para a renovação de tokens.
 from core.cofre import _soltar_arquivo, _trancar
 from core.estados import Estado, transicionar
@@ -807,6 +807,20 @@ def ciclo() -> dict:
         return _passada()
 
 
+def sincronizar_amazon():
+    """Pedidos da Amazon, só leitura (core/sincronizacao.py). Sem credenciais
+    da Amazon, a etapa não roda e diz por quê. Leitura acontece mesmo com a
+    simulação ligada: ler não muda nada na Amazon."""
+    from core import sincronizacao
+    try:
+        configurada = config.amazon.configurado
+    except cofre.ErroCofre:
+        configurada = False
+    if not configurada:
+        return "não configurada"
+    return sincronizacao.sincronizar_amazon()
+
+
 def _passada() -> dict:
     """As cinco etapas, com a vez de rodar já garantida por ciclo()."""
     inicializar()
@@ -820,6 +834,7 @@ def _passada() -> dict:
         ("ordens_montadas", montar_ordens_de_compra),
         ("perguntas", lambda: atender_perguntas(ml)),
         ("rastreios", lambda: atualizar_rastreio(ml)),
+        ("amazon", sincronizar_amazon),
     ]:
         try:
             resumo[nome] = func()

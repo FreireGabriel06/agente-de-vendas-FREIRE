@@ -104,6 +104,10 @@ def problema_na_chave(chave: str, valor: str) -> str | None:
         return f"{chave}: o valor precisa ser texto."
     if any(ord(c) < 32 or 127 <= ord(c) < 160 or ord(c) in (0x2028, 0x2029) for c in valor):
         return f"{chave}: o valor tem quebra de linha ou outro caractere de controle."
+    if chave == "AMZ_REDIRECT_URI" and not re.fullmatch(r"https://[^\s?#]+", valor):
+        return "AMZ_REDIRECT_URI: use o endereço https cadastrado no app da Amazon."
+    if chave == "AMZ_APPLICATION_ID" and not re.fullmatch(r"amzn1\.[a-z]+(?:\.[a-z]+)*\.[A-Za-z0-9-]+", valor):
+        return "AMZ_APPLICATION_ID: o ID do app começa com amzn1."
     return None
 
 
@@ -317,6 +321,101 @@ def ml_trocar_code(code_ou_url: str, sid: str | None, redirect_uri: str | None =
     })
     config.ml.seller_id = str(d.get("user_id", ""))
     return {"seller_id": d.get("user_id"), "expira_em_seg": d.get("expires_in")}
+
+
+# ---------------------------------------------------------------- Amazon
+#
+# Website Authorization Workflow da SP-API (developer-docs.amazon.com,
+# conferido em 13/10/2026). Passos 3, 7-8 e 10-14:
+#   3. o painel manda o vendedor ao consentimento no Seller Central com state;
+#   5-8. a Amazon chama a URI de log-in com amazon_callback_uri e amazon_state;
+#        o painel confere a sessão e devolve o vendedor ao callback da Amazon
+#        com um state novo, preso à sessão;
+#   10-14. a Amazon chama a redirect URI com state, selling_partner_id e
+#        spapi_oauth_code (vale 5 minutos); o painel confere o state, troca o
+#        código na LWA e guarda o refresh token no cofre.
+
+# Só domínios da Amazon recebem o vendedor de volta (sem redirecionamento aberto).
+_DOMINIO_AMAZON = re.compile(
+    r"(?:sellercentral(?:-europe|-japan)?\.)?amazon\."
+    r"(?:com|ca|com\.mx|com\.br|co\.uk|de|fr|it|es|nl|se|pl|com\.be|com\.tr|ae|sa|eg|in"
+    r"|co\.jp|com\.au|sg|ie)")
+
+
+def _amz(variavel: str, atributo: str) -> str:
+    """Lido na hora: o que o painel acabou de salvar vale sem reiniciar."""
+    return (os.getenv(variavel) or getattr(config.amazon, atributo) or "").strip()
+
+
+def amazon_url_autorizacao(sid: str | None) -> str:
+    application_id = _amz("AMZ_APPLICATION_ID", "application_id")
+    if not application_id:
+        raise ValueError("Salve o ID do app da Amazon (AMZ_APPLICATION_ID) primeiro.")
+    estado = seguranca.criar_state_oauth("amazon-consentimento", sid)
+    parametros = {"application_id": application_id, "state": estado}
+    if _amz("AMZ_APP_VERSAO", "versao_app") == "beta":
+        parametros["version"] = "beta"
+    central = _amz("AMZ_SELLER_CENTRAL", "seller_central") or "https://sellercentral.amazon.com"
+    alvo = urlparse(central)
+    if alvo.scheme != "https" or not _DOMINIO_AMAZON.fullmatch(alvo.hostname or ""):
+        raise ValueError("AMZ_SELLER_CENTRAL precisa ser um endereço https da Amazon.")
+    return f"https://{alvo.hostname}/apps/authorize/consent?" + urlencode(parametros)
+
+
+def amazon_callback(amazon_callback_uri: str, amazon_state: str, sid: str | None) -> str:
+    """Passos 7-8: o endereço para onde o painel devolve o vendedor."""
+    alvo = urlparse(amazon_callback_uri or "")
+    if (alvo.scheme != "https" or not _DOMINIO_AMAZON.fullmatch(alvo.hostname or "")
+            or not alvo.path.startswith("/apps/authorize/confirm/")):
+        raise ValueError("O endereço de retorno não é da Amazon. Comece a autorização pelo painel.")
+    if not amazon_state:
+        raise ValueError("Faltou o amazon_state. Comece a autorização pelo painel.")
+    # Só segue se esta sessão abriu o consentimento (passo 3) há menos de 10 min.
+    seguranca.consumir_consentimento_pendente("amazon-consentimento", sid)
+    estado = seguranca.criar_state_oauth("amazon", sid)
+    parametros = {"amazon_state": amazon_state, "state": estado}
+    redirect_uri = _amz("AMZ_REDIRECT_URI", "redirect_uri")
+    if redirect_uri:
+        parametros["redirect_uri"] = redirect_uri
+    if _amz("AMZ_APP_VERSAO", "versao_app") == "beta":
+        parametros["version"] = "beta"
+    return f"https://{alvo.hostname}{alvo.path}?" + urlencode(parametros)
+
+
+def amazon_concluir(parametros: dict, sid: str | None) -> dict:
+    """Passos 11-14. `parametros` vem da redirect URI (ou da URL colada)."""
+    from conectores import amazon
+
+    estado = parametros.get("state")
+    code = parametros.get("spapi_oauth_code")
+    vendedor = parametros.get("selling_partner_id") or ""
+    if not estado or not code:
+        raise ValueError("Cole a URL inteira de retorno da Amazon (com state e spapi_oauth_code).")
+    # Antes de qualquer chamada: recusa state que esta sessão não criou,
+    # vencido ou já usado.
+    seguranca.consumir_state_oauth(estado, "amazon", sid)
+    redirect_uri = _amz("AMZ_REDIRECT_URI", "redirect_uri")
+    if not redirect_uri:
+        raise ValueError("Salve a redirect URI do app (AMZ_REDIRECT_URI) primeiro: "
+                         "a troca do código precisa dela, idêntica à cadastrada.")
+    if vendedor and not re.fullmatch(r"[A-Z0-9]{8,20}", vendedor):
+        raise ValueError("O selling_partner_id recebido não parece um ID da Amazon.")
+    # O código vale uma vez: se o cofre não aceitaria o token, para aqui.
+    cofre.conferir()
+    try:
+        tokens = amazon.trocar_codigo(code, redirect_uri)
+    except amazon.ErroAmazon as e:
+        raise ValueError(str(e)) from None
+    cofre.guardar_segredo("AMZ_REFRESH_TOKEN", tokens["refresh_token"])
+    if vendedor:
+        gravar_env({"AMZ_SELLING_PARTNER_ID": vendedor})
+    return {"selling_partner_id": vendedor}
+
+
+def parametros_da_url(texto: str) -> dict:
+    """Os parâmetros de uma URL colada (a da barra de endereço no retorno)."""
+    consulta = urlparse((texto or "").strip()).query
+    return {k: v[0] for k, v in parse_qs(consulta).items() if v}
 
 
 # ---------------------------------------------------------------- Shopee
