@@ -43,6 +43,7 @@ for _nome in (
     "PRAZO_FORNECEDOR_DIAS", "RETENCAO_PII_DIAS", "SESSAO_OCIOSA_MIN",
     "SESSAO_MAX_HORAS", "PORTA_PAINEL", "HOST_PAINEL", "INTERVALO_WORKER",
     "MODO_SIMULACAO", "MODELO_CLAUDE", "ESFORCO_CLAUDE", "EMITE_NOTA_FISCAL",
+    "TLS_CERT", "TLS_CHAVE", "PROXY_HTTPS", "PROXY_IPS",
 ):
     os.environ.pop(_nome, None)
 
@@ -67,6 +68,8 @@ os.environ.update({
     "SHOPEE_SHOP_ID": "2000002",
     "AMZ_LWA_CLIENT_ID": "amz-id-falso",
     "AMZ_LWA_CLIENT_SECRET": "amz-segredo-falso",
+    # O TestClient chama o painel pelo nome "testserver".
+    "HOSTS_PAINEL": "testserver",
 })
 
 
@@ -180,6 +183,7 @@ def isolamento(tmp_path, monkeypatch):
     monkeypatch.setattr(shopee, "ARQ_TOKEN", tmp_path / ".token_shopee.json")
     monkeypatch.setattr(worker, "PASTA_ORDENS", tmp_path / "ordens_de_compra")
     monkeypatch.setattr(seguranca, "_states", {})
+    monkeypatch.setattr(seguranca, "_falhas_por_ip", {})
 
     ambiente = dict(os.environ)
     preparar()

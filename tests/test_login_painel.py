@@ -17,7 +17,7 @@ def _ha(**tempo) -> str:
 
 def _sessao_no_banco(cliente, **campos):
     """Troca colunas da sessão do cliente direto no banco e devolve a linha."""
-    sid = cliente.cookies.get(seguranca.COOKIE_SESSAO)
+    sid = seguranca.hash_da_sessao(cliente.cookies.get(seguranca.COOKIE_SESSAO))
     with conectar() as conn:
         for coluna, valor in campos.items():
             conn.execute(f"UPDATE sessoes SET {coluna} = ? WHERE id = ?", (valor, sid))
@@ -94,11 +94,19 @@ def test_login_aceito_cria_sessao_com_cookie_protegido(cliente, operador):
     assert cliente.get("/").status_code == 200
 
 
-def test_bloqueio_depois_de_cinco_tentativas(cliente, operador):
-    for _ in range(5):
-        r = cliente.post("/api/login", json={"usuario": USUARIO, "senha": "errada-errada"})
+def de_outro_endereco(novo_cliente, i):
+    return novo_cliente(client=(f"10.0.{i}.1", 50000))
+
+
+def test_bloqueio_da_conta_depois_de_erros_de_varios_enderecos(novo_cliente, operador):
+    # Cada endereço erra menos que o limite dele; a conta soma todos.
+    por_endereco = seguranca.FALHAS_POR_IP - 1
+    for i in range(seguranca.TENTATIVAS_ATE_BLOQUEIO):
+        r = de_outro_endereco(novo_cliente, i // por_endereco).post(
+            "/api/login", json={"usuario": USUARIO, "senha": "errada-errada"})
         assert r.status_code == 401
 
+    cliente = de_outro_endereco(novo_cliente, 250)
     r = cliente.post("/api/login", json={"usuario": USUARIO, "senha": SENHA})
     assert r.status_code == 401
     assert "bloqueado" in r.json()["detail"].lower()
@@ -115,8 +123,8 @@ def test_bloqueio_depois_de_cinco_tentativas(cliente, operador):
     assert cliente.post("/api/login", json={"usuario": USUARIO, "senha": SENHA}).status_code == 200
 
 
-def test_quatro_erros_ainda_nao_bloqueiam(cliente, operador):
-    for _ in range(4):
+def test_erros_abaixo_do_limite_ainda_nao_bloqueiam(cliente, operador):
+    for _ in range(seguranca.FALHAS_POR_IP - 1):
         cliente.post("/api/login", json={"usuario": USUARIO, "senha": "errada-errada"})
     assert cliente.post("/api/login", json={"usuario": USUARIO, "senha": SENHA}).status_code == 200
 
@@ -127,7 +135,7 @@ def test_login_certo_zera_as_tentativas(cliente, operador):
     for _ in range(4):
         assert cliente.post("/api/login", json=errada).status_code == 401
     assert cliente.post("/api/login", json=certa).status_code == 200
-    # Sem zerar, este erro seria o quinto e bloquearia o operador.
+    # Sem zerar, este erro seria o quinto deste endereço e o faria esperar.
     assert cliente.post("/api/login", json=errada).status_code == 401
     assert cliente.post("/api/login", json=certa).status_code == 200
 

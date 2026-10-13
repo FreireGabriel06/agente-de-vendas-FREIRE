@@ -24,8 +24,10 @@ Decisões e fontes (consultadas em 16/09/2026):
     seção 2.1; OWASP ASVS 5.0, requisitos 10.1.2 e 10.2.1.
 
 Cada verificação de senha custa cerca de 134 MB de memória, por desenho do
-scrypt. O bloqueio por tentativas limita o abuso. Exposto à internet, isso
-ainda pede limite de requisições na camada da frente.
+scrypt: no máximo VERIFICACOES_SIMULTANEAS rodam ao mesmo tempo. Erros de
+login contam por endereço (FALHAS_POR_IP em JANELA_IP_MIN minutos) e por
+conta (TENTATIVAS_ATE_BLOQUEIO seguidos): um atacante sozinho não tranca o
+operador legítimo. Lote S5; achados S-07, S-08 e S-79 da auditoria.
 """
 import base64
 import hashlib
@@ -69,8 +71,12 @@ SCRYPT_MAXMEM = 300 * 1024 * 1024   # 128 * N * r cabe aqui com folga
 SENHA_MINIMA = 12
 OCIOSIDADE_MIN = int(os.getenv("SESSAO_OCIOSA_MIN", "30"))
 DURACAO_MAX_H = int(os.getenv("SESSAO_MAX_HORAS", "8"))
-TENTATIVAS_ATE_BLOQUEIO = 5
+TENTATIVAS_ATE_BLOQUEIO = 20   # erros seguidos na conta, de qualquer endereço
 BLOQUEIO_MIN = 15
+FALHAS_POR_IP = 5              # erros de um endereço dentro da janela abaixo
+JANELA_IP_MIN = 15
+IPS_VIGIADOS_MAX = 10_000      # teto da memória do limite por endereço
+VERIFICACOES_SIMULTANEAS = 2   # scrypt ao mesmo tempo (~134 MB cada)
 
 COOKIE_SESSAO = "agente_sessao"
 
@@ -81,6 +87,16 @@ class FalhaLogin(Exception):
 
 class PrecisaCodigo(FalhaLogin):
     """Senha certa, falta o código do autenticador (MFA ligado)."""
+
+
+class MuitasTentativas(FalhaLogin):
+    """Erros demais a partir do mesmo endereço; espera_s diz quanto falta."""
+
+    def __init__(self, espera_s: int):
+        minutos = max(1, -(-espera_s // 60))
+        super().__init__(f"Muitas tentativas a partir deste endereço. "
+                         f"Tente de novo em {minutos} min.")
+        self.espera_s = espera_s
 
 
 # Colunas que entraram depois (lote S4). Banco antigo recebe cada uma, uma vez.
@@ -98,6 +114,9 @@ def inicializar_seguranca():
         for nome, tipo in COLUNAS_OPERADORES.items():
             if nome not in existentes:
                 conn.execute(f"ALTER TABLE operadores ADD COLUMN {nome} {tipo}")
+        # Sessões de antes do lote S5 guardavam o id em claro; nenhuma delas
+        # confere com o hash, então só ocupariam espaço até vencer.
+        conn.execute("DELETE FROM sessoes WHERE length(id) != 64")
 
 
 # --------------------------------------------------------------------- TOTP
@@ -267,10 +286,92 @@ def existe_operador() -> bool:
         return conn.execute("SELECT COUNT(*) AS c FROM operadores").fetchone()["c"] > 0
 
 
+# ------------------------------------------------------- Limite por endereço
+#
+# FALHAS_POR_IP erros de login a partir do mesmo endereço em JANELA_IP_MIN
+# minutos fazem esse endereço esperar, qualquer que seja o operador tentado.
+# Assim um atacante sozinho não tranca a conta do operador legítimo (achado
+# S-08): o bloqueio da conta só vem com TENTATIVAS_ATE_BLOQUEIO erros
+# seguidos, que pedem vários endereços. Em memória, como o state do OAuth: o
+# painel é um processo só, e um reinício só zera a contagem. Atrás de proxy,
+# o endereço vem de X-Forwarded-For, aceito só de PROXY_IPS (executar.py).
+
+_falhas_por_ip: dict[str, list[float]] = {}
+_trava_ips = threading.Lock()
+
+
+def _falhas_recentes(ip: str, momento: float) -> list[float]:
+    """As falhas do endereço dentro da janela. Chamar com _trava_ips."""
+    limite = momento - JANELA_IP_MIN * 60
+    falhas = [t for t in _falhas_por_ip.get(ip, ()) if t > limite]
+    if falhas:
+        _falhas_por_ip[ip] = falhas
+    else:
+        _falhas_por_ip.pop(ip, None)
+    return falhas
+
+
+def espera_do_ip(ip: str | None) -> int:
+    """Segundos que o endereço ainda espera para tentar de novo; 0 se pode."""
+    if not ip:
+        return 0
+    momento = time.monotonic()
+    with _trava_ips:
+        falhas = _falhas_recentes(ip, momento)
+    if len(falhas) < FALHAS_POR_IP:
+        return 0
+    return max(1, int(falhas[-FALHAS_POR_IP] + JANELA_IP_MIN * 60 - momento) + 1)
+
+
+def _anotar_falha_do_ip(ip: str | None) -> None:
+    if not ip:
+        return
+    momento = time.monotonic()
+    with _trava_ips:
+        if ip not in _falhas_por_ip and len(_falhas_por_ip) >= IPS_VIGIADOS_MAX:
+            for outro in list(_falhas_por_ip):
+                _falhas_recentes(outro, momento)
+            if len(_falhas_por_ip) >= IPS_VIGIADOS_MAX:
+                _falhas_por_ip.pop(next(iter(_falhas_por_ip)))
+        _falhas_por_ip.setdefault(ip, []).append(momento)
+
+
+def _limpar_ip(ip: str | None) -> None:
+    if ip:
+        with _trava_ips:
+            _falhas_por_ip.pop(ip, None)
+
+
+# --------------------------------------------------------- Conferir a senha
+
+_verificacoes = threading.BoundedSemaphore(VERIFICACOES_SIMULTANEAS)
+_hash_ficticio: dict[int, str] = {}
+
+
+def _conferir_senha(senha: str, guardado: str) -> bool:
+    with _verificacoes:
+        return conferir_hash(senha, guardado)
+
+
+def _gastar_o_tempo_de_uma_senha(senha: str) -> None:
+    """Operador que não existe custa o mesmo scrypt que senha errada: o tempo
+    da resposta não diz quais operadores existem (achado S-07)."""
+    if SCRYPT_N not in _hash_ficticio:
+        _hash_ficticio[SCRYPT_N] = gerar_hash(secrets.token_urlsafe(16))
+    _conferir_senha(senha, _hash_ficticio[SCRYPT_N])
+
+
 # ------------------------------------------------------------------ Sessões
 
 def _quando(texto: str) -> datetime:
     return datetime.fromisoformat(texto)
+
+
+def hash_da_sessao(sid: str) -> str:
+    """O banco guarda só o SHA-256 do id da sessão: uma cópia do banco não
+    abre sessão nenhuma (achado S-79). O id tem 256 bits aleatórios, então o
+    hash dispensa sal e custo."""
+    return hashlib.sha256(sid.encode()).hexdigest()
 
 
 def _marcar_falha(operador_id: int, tentativas: int):
@@ -288,27 +389,36 @@ def _marcar_falha(operador_id: int, tentativas: int):
                          f"depois de {tentativas} tentativas")
 
 
-def autenticar(usuario: str, senha: str, codigo: str | None = None) -> tuple[str, str]:
+def autenticar(usuario: str, senha: str, codigo: str | None = None,
+               ip: str | None = None) -> tuple[str, str]:
     """Devolve (id_da_sessao, token_csrf). Levanta FalhaLogin em qualquer recusa;
-    PrecisaCodigo quando a senha confere e o MFA pede o código."""
+    PrecisaCodigo quando a senha confere e o MFA pede o código; MuitasTentativas
+    quando o endereço errou demais na janela."""
     usuario = (usuario or "").strip().lower()
+    espera = espera_do_ip(ip)
+    if espera:
+        raise MuitasTentativas(espera)
     with conectar() as conn:
         op = conn.execute("SELECT * FROM operadores WHERE usuario = ?", (usuario,)).fetchone()
     if op is None:
+        _gastar_o_tempo_de_uma_senha(senha or "")
+        _anotar_falha_do_ip(ip)
         raise FalhaLogin("Usuário ou senha inválidos.")
 
     momento = datetime.now(timezone.utc)
     if op["bloqueado_ate"] and _quando(op["bloqueado_ate"]) > momento:
         raise FalhaLogin("Operador bloqueado por tentativas. Espere alguns minutos.")
 
-    if not conferir_hash(senha or "", op["senha_hash"]):
+    if not _conferir_senha(senha or "", op["senha_hash"]):
         _marcar_falha(op["id"], op["tentativas"] or 0)
+        _anotar_falha_do_ip(ip)
         raise FalhaLogin("Usuário ou senha inválidos.")
 
     # Operador desativado: a mesma resposta de credencial errada, sem dizer
     # que a conta existe; o evento registra o motivo.
     if not op["ativo"]:
         registrar_evento("atencao", "seguranca", f"Login recusado: operador desativado ({usuario})")
+        _anotar_falha_do_ip(ip)
         raise FalhaLogin("Usuário ou senha inválidos.")
 
     passo = None
@@ -319,6 +429,7 @@ def autenticar(usuario: str, senha: str, codigo: str | None = None) -> tuple[str
         passo = conferir_totp(segredo, codigo, op["totp_ultimo_passo"]) if segredo else None
         if passo is None:
             _marcar_falha(op["id"], op["tentativas"] or 0)
+            _anotar_falha_do_ip(ip)
             raise FalhaLogin("Código do autenticador inválido ou já usado.")
 
     sid = secrets.token_urlsafe(32)
@@ -340,7 +451,9 @@ def autenticar(usuario: str, senha: str, codigo: str | None = None) -> tuple[str
                      (op["id"],))
         conn.execute("DELETE FROM sessoes WHERE expira_em <= ?", (inicio,))
         conn.execute("INSERT INTO sessoes (id, operador_id, csrf, criada_em, ultimo_uso, expira_em)"
-                     " VALUES (?,?,?,?,?,?)", (sid, op["id"], csrf, inicio, inicio, expira))
+                     " VALUES (?,?,?,?,?,?)",
+                     (hash_da_sessao(sid), op["id"], csrf, inicio, inicio, expira))
+    _limpar_ip(ip)
     registrar_evento("info", "seguranca", f"Login de {usuario}")
     return sid, csrf
 
@@ -350,19 +463,20 @@ def validar_sessao(sid: str | None) -> dict | None:
     if not sid:
         return None
     momento = datetime.now(timezone.utc)
+    chave = hash_da_sessao(sid)
     with conectar() as conn:
         s = conn.execute(
             "SELECT s.*, o.usuario FROM sessoes s JOIN operadores o ON o.id = s.operador_id"
-            " WHERE s.id = ? AND o.ativo = 1", (sid,)).fetchone()
+            " WHERE s.id = ? AND o.ativo = 1", (chave,)).fetchone()
         if s is None:
             return None
         vencida = (_quando(s["expira_em"]) <= momento
                    or _quando(s["ultimo_uso"]) + timedelta(minutes=OCIOSIDADE_MIN) <= momento)
         if vencida:
-            conn.execute("DELETE FROM sessoes WHERE id = ?", (sid,))
+            conn.execute("DELETE FROM sessoes WHERE id = ?", (chave,))
             return None
         conn.execute("UPDATE sessoes SET ultimo_uso = ? WHERE id = ?",
-                     (momento.isoformat(timespec="seconds"), sid))
+                     (momento.isoformat(timespec="seconds"), chave))
         return {"usuario": s["usuario"], "operador_id": s["operador_id"], "csrf": s["csrf"]}
 
 
@@ -370,7 +484,7 @@ def encerrar_sessao(sid: str | None):
     if not sid:
         return
     with conectar() as conn:
-        conn.execute("DELETE FROM sessoes WHERE id = ?", (sid,))
+        conn.execute("DELETE FROM sessoes WHERE id = ?", (hash_da_sessao(sid),))
 
 
 # ------------------------------------------------------------ State do OAuth
@@ -396,7 +510,7 @@ class StateInvalido(ValueError):
 
 
 def _vinculo(sid: str) -> str:
-    return hashlib.sha256(sid.encode()).hexdigest()
+    return hash_da_sessao(sid)
 
 
 def criar_state_oauth(provedor: str, sid: str | None, dados: dict | None = None) -> str:

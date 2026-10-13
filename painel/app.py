@@ -21,12 +21,13 @@ Decisões de UX que valem explicar:
 import asyncio
 import html
 import json
+import os
 import secrets
 import threading
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Query, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
@@ -38,7 +39,9 @@ from core.estados import Estado, ESTADOS_CRITICOS, historico
 from inteligencia import precificacao, tendencias
 
 BASE = Path(__file__).resolve().parent
-app = FastAPI(title="Agente Comercial", docs_url=None, redoc_url=None)
+# Sem /docs, /redoc nem /openapi.json: o mapa da API não fica à mostra nem
+# para quem tem sessão (achado S-24).
+app = FastAPI(title="Agente Comercial", docs_url=None, redoc_url=None, openapi_url=None)
 
 
 # ------------------------------------------------------------- Autenticação
@@ -74,15 +77,57 @@ async def exigir_sessao(request: Request, call_next):
     return await call_next(request)
 
 
-# Declarado depois de exigir_sessao para ficar por fora dele (o último
-# middleware declarado roda primeiro): assim o 401 e o redirecionamento para
-# o login também levam os cabeçalhos.
+# Nomes pelos quais o painel aceita ser chamado (cabeçalho Host). Um Host
+# qualquer viraria o endereço de retorno do OAuth da Shopee (achado S-14) e
+# deixaria o painel local aberto a DNS rebinding. Fora do loopback, o nome
+# público vem de HOSTS_PAINEL, separado por vírgula; executar.py recusa
+# iniciar sem ele.
+HOSTS_LOCAIS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def hosts_permitidos() -> set[str]:
+    extras = os.getenv("HOSTS_PAINEL", "")
+    return set(HOSTS_LOCAIS) | {h.strip().lower().rstrip(".") for h in extras.split(",")
+                                if h.strip()}
+
+
+def nome_do_host(valor: str) -> str:
+    """'painel.exemplo:8777' -> 'painel.exemplo'; '[::1]:8777' -> '::1'."""
+    valor = (valor or "").strip().lower()
+    if valor.startswith("["):
+        return valor[1:valor.find("]")] if "]" in valor else ""
+    return valor.partition(":")[0].rstrip(".")
+
+
+@app.middleware("http")
+async def host_permitido(request: Request, call_next):
+    if nome_do_host(request.headers.get("host", "")) not in hosts_permitidos():
+        return JSONResponse({"detail": "Host não permitido."}, status_code=400)
+    return await call_next(request)
+
+
+# Script e estilo embutidos continuam valendo (painel.html e o login usam
+# <script> e onclick); a política ainda impede carregar script, imagem ou
+# fetch de outro site, abrir o painel numa moldura, trocar a <base> e mandar
+# formulário para fora. Achado S-09.
+CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; "
+       "style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; "
+       "font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; "
+       "frame-ancestors 'none'")
+
+
+# Declarado depois de exigir_sessao e host_permitido para ficar por fora
+# deles (o último middleware declarado roda primeiro): assim o 400, o 401 e o
+# redirecionamento para o login também levam os cabeçalhos.
 @app.middleware("http")
 async def cabecalhos_de_seguranca(request: Request, call_next):
-    """Cabeçalhos em toda resposta (lote S4): sem farejar tipo, sem moldura de
-    outro site, Referer só para a mesma origem (rotas da Amazon pedem
-    no-referrer e já o definem) e, sob HTTPS, HSTS."""
+    """Cabeçalhos em toda resposta (lotes S4 e S5): CSP, sem farejar tipo,
+    sem moldura de outro site, Referer só para a mesma origem (rotas da
+    Amazon pedem no-referrer e já o definem), nada em cache (a resposta pode
+    ter dado de comprador) e, sob HTTPS, HSTS."""
     resposta = await call_next(request)
+    resposta.headers.setdefault("Content-Security-Policy", CSP)
+    resposta.headers.setdefault("Cache-Control", "no-store")
     resposta.headers.setdefault("X-Content-Type-Options", "nosniff")
     resposta.headers.setdefault("X-Frame-Options", "DENY")
     resposta.headers.setdefault("Referrer-Policy", "same-origin")
@@ -226,15 +271,38 @@ async def api_nichos(request: Request):
         for o in ops]}
 
 
+def _numero(corpo: dict, nome: str, padrao, minimo: str, maximo: str) -> Decimal:
+    """Número finito dentro da faixa, ou 422. Sem isso, "nan" ou um texto
+    viravam erro 500 (achado S-13)."""
+    valor = corpo.get(nome, padrao)
+    try:
+        if isinstance(valor, bool) or not isinstance(valor, (int, float, str)):
+            raise InvalidOperation
+        numero = Decimal(str(valor).strip().replace(",", "."))
+    except InvalidOperation:
+        raise HTTPException(422, f"{nome}: informe um número.")
+    if not numero.is_finite() or not Decimal(minimo) <= numero <= Decimal(maximo):
+        raise HTTPException(422, f"{nome}: use um número de {minimo} a {maximo}.")
+    return numero
+
+
 @app.post("/api/preco")
 async def api_preco(request: Request):
     c = await request.json()
-    r = precificacao.sugerir_preco(
-        custo_produto=float(c["custo"]),
-        margem_alvo_pct=float(c.get("margem", 25)),
-        peso_kg=float(c.get("peso", 0.3)),
-        tipo_anuncio=c.get("tipo", "classico"),
-    )
+    if not isinstance(c, dict):
+        raise HTTPException(422, "Envie um objeto JSON.")
+    tipo = c.get("tipo", "classico")
+    if tipo not in precificacao.COMISSAO_PADRAO:
+        raise HTTPException(422, f"tipo: use {' ou '.join(precificacao.COMISSAO_PADRAO)}.")
+    try:
+        r = precificacao.sugerir_preco(
+            custo_produto=_numero(c, "custo", None, "0.01", "1000000"),
+            margem_alvo_pct=_numero(c, "margem", 25, "0", "90"),
+            peso_kg=_numero(c, "peso", "0.3", "0", "1000"),
+            tipo_anuncio=tipo,
+        )
+    except ValueError as e:
+        raise HTTPException(422, str(e))
     return r.como_dict()
 
 
@@ -261,7 +329,7 @@ def api_expurgar():
 
 
 @app.get("/api/eventos")
-def api_eventos(n: int = 40):
+def api_eventos(n: int = Query(40, ge=1, le=200)):
     with conectar() as conn:
         linhas = conn.execute(
             "SELECT nivel, origem, mensagem, ocorrido_em FROM eventos"
@@ -669,12 +737,36 @@ def pagina_login():
     return _pagina_login()
 
 
+def _texto_do_corpo(valor) -> str:
+    return valor if isinstance(valor, str) else ""
+
+
 @app.post("/api/login")
 async def api_login(request: Request):
-    corpo = await request.json()
+    # Só JSON: um formulário de outro site (text/plain ou urlencoded, que o
+    # navegador manda sem perguntar antes) não faz login (achado S-78).
+    tipo = request.headers.get("content-type", "").split(";")[0].strip().lower()
+    if tipo != "application/json":
+        return JSONResponse({"detail": "Envie o login em JSON."}, status_code=415)
     try:
-        sid, csrf = seguranca.autenticar(corpo.get("usuario", ""), corpo.get("senha", ""),
-                                         corpo.get("codigo"))
+        corpo = await request.json()
+    except ValueError:
+        corpo = None
+    if not isinstance(corpo, dict):
+        return JSONResponse({"detail": "Usuário ou senha inválidos."}, status_code=401)
+    codigo = corpo.get("codigo")
+    if isinstance(codigo, int) and not isinstance(codigo, bool):
+        codigo = str(codigo).zfill(seguranca.TOTP_DIGITOS)
+    try:
+        # O scrypt roda fora do laço de eventos: o painel continua atendendo
+        # enquanto a senha é conferida (achado S-08).
+        sid, csrf = await run_in_threadpool(
+            seguranca.autenticar, _texto_do_corpo(corpo.get("usuario")),
+            _texto_do_corpo(corpo.get("senha")), _texto_do_corpo(codigo) or None,
+            request.client.host if request.client else None)
+    except seguranca.MuitasTentativas as e:
+        return JSONResponse({"detail": str(e)}, status_code=429,
+                            headers={"Retry-After": str(e.espera_s)})
     except seguranca.PrecisaCodigo as e:
         return JSONResponse({"detail": str(e), "mfa": True}, status_code=401)
     except seguranca.FalhaLogin as e:
