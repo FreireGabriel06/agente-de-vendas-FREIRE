@@ -110,6 +110,7 @@ What the automated suite covers, and how to run it, is under [Tests](#tests).
 | Marketplace errors without the response body or the full URL: the message keeps the method, the path without its query, the HTTP status and the marketplace's error code when it looks like one; a network failure keeps only the exception type (the Shopee URL carries the access token). The approval queue, events and the panel's HTTP 500 show only messages written by the project; any other exception shows only its type, with the stack trace (no message) in the event | `core/erros.py`, `conectores/`, `core/aprovacao.py`, `painel/app.py` | Tested with fake marketplaces |
 | Second factor by authenticator app (TOTP, RFC 6238, standard library only): secret in the encrypted vault, a code works once, a wrong code counts toward the lockout; operator deactivation ends every session at once — see [Panel security](#panel-security) | `core/seguranca.py`, `cli.py`, `painel/app.py` | Tested |
 | HTTPS: the panel serves TLS itself (`TLS_CERT`, `TLS_CHAVE`) or trusts `X-Forwarded-Proto` only from a reverse proxy (`PROXY_HTTPS`, `PROXY_IPS`); it refuses to start on a non-local address without one of them; `Secure` session cookie and HSTS under HTTPS; `nosniff`, `X-Frame-Options: DENY` and `Referrer-Policy` on every response | `executar.py`, `painel/app.py` | Tested |
+| Roles (DPP 1.3, least privilege): `admin` does everything; `leitura` only reads the queue, orders, products, suppliers, Amazon data and alerts and uses the price calculator; it cannot approve, reveal buyer data, configure, connect marketplaces, read security events or run a cycle (HTTP 403). The first operator is `admin`, later ones start as `leitura`; existing operators stay `admin`; the last active admin cannot be demoted | `core/seguranca.py`, `painel/app.py`, `cli.py` | Tested |
 | Audit trail (DPP 2.6.1): every event records who acted (the panel operator, the address trying to log in, `cli (system user)` or `sistema` for the worker); the table accepts inserts only (triggers refuse UPDATE and DELETE); each event stores the SHA-256 of the previous one with its own content, and `cli.py eventos --verificar` finds the first altered or removed row and prints the last hash to note down elsewhere | `db.py`, `painel/app.py`, `cli.py` | Tested |
 | Amazon data deletion (DPP 1.7): `cli.py amazon apagar-dados --motivo …` removes orders, items, listings, sync state, alerts and the refresh token, overwrites the freed pages and compacts the database; restoring a backup made before the deletion deletes it again; the expired-connection alert states the 30-day deadline. An address that reaches the login limit records a warning event. Reporting, controls and the incident response plan are in [SECURITY.md](SECURITY.md) | `core/sincronizacao.py`, `core/backup.py`, `cli.py`, `SECURITY.md` | Tested |
 | Accounts and passwords by the Amazon Data Protection Policy (1.2.2, 1.4.1): MFA required whenever the panel listens beyond loopback (or with `MFA_OBRIGATORIO=true`), the panel refuses to start exposed while an active operator lacks it; passwords of 12+ characters with upper and lower case, a digit and a symbol, no part of the operator name, none of the last 10, changed at most once a day (unless leaked) and valid for 365 days; `cli.py operadores` lists operators, MFA, last login and password age for the access review | `core/seguranca.py`, `cli.py`, `executar.py` | Tested |
@@ -896,7 +897,16 @@ event). After 365 days the login asks for a new one. Existing passwords are
 checked against the rules on their next change.
 
 ```bash
-python cli.py operadores     # operators, MFA, last login and password age, for the access review
+python cli.py operadores     # operators, role, MFA, last login and password age, for the access review
+```
+
+Roles: `admin` does everything; `leitura` only reads (queue, orders, products,
+suppliers, Amazon data, alerts) and uses the price calculator. The first
+operator is `admin`; operators created after it start as `leitura`, and an
+admin promotes them:
+
+```bash
+python cli.py operador --usuario someone --papel admin
 ```
 
 Deactivating an operator ends its sessions immediately and refuses its login
@@ -975,7 +985,7 @@ Sheet and the cryptography and secret-management chapters of OWASP ASVS 5.0.
 
 ## Known limitations
 
-- No roles: every operator can do everything. Create one account per person; shared accounts break the access review.
+- Two roles only (`admin`, `leitura`); no per-marketplace or per-action permissions. Create one account per person; shared accounts break the access review.
 - Mercado Livre drives the purchase flow. Amazon orders are synced read-only for monitoring and never enter the purchase flow (Amazon forbids a third party as the sender); the panel screen does not list them yet (the API does). Shopee stops at the connection test.
 - Connecting sellers other than yourself on Amazon needs a public developer registration and an app approved by Amazon; that review is outside this project's control.
 - Backups are manual (or scheduled by you with `BACKUP_SENHA`); nothing copies them off the machine. A restore reapplies only the deletions recorded in the eliminations file it is given.

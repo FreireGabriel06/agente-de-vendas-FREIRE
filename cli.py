@@ -181,6 +181,10 @@ def cmd_operador(args):
         seguranca.desativar_mfa(args.usuario)
         print(f"MFA desligado para {args.usuario}.")
         return
+    if args.papel:
+        seguranca.definir_papel(args.usuario, args.papel)
+        print(f"Operador {args.usuario}: papel {args.papel}.")
+        return
     if args.desativar or args.reativar:
         seguranca.definir_ativo(args.usuario, ativo=bool(args.reativar))
         print(f"Operador {args.usuario} {'reativado' if args.reativar else 'desativado; sessões encerradas'}.")
@@ -224,9 +228,10 @@ def cmd_operadores(args):
     if not linhas:
         print("Nenhum operador cadastrado.")
         return
-    print(f"{'operador':20} {'ativo':6} {'MFA':4} {'último login':26} {'senha trocada em':26} bloqueado até")
+    print(f"{'operador':20} {'papel':8} {'ativo':6} {'MFA':4} {'último login':26} "
+          f"{'senha trocada em':26} bloqueado até")
     for o in linhas:
-        print(f"{o['usuario']:20} {'sim' if o['ativo'] else 'não':6} "
+        print(f"{o['usuario']:20} {o['papel']:8} {'sim' if o['ativo'] else 'não':6} "
               f"{'sim' if o['totp_ativo'] else 'não':4} {o['ultimo_login_em'] or '—':26} "
               f"{o['senha_trocada_em'] or '—':26} {o['bloqueado_ate'] or '—'}")
     if seguranca.mfa_obrigatorio() and seguranca.operadores_sem_mfa():
@@ -646,6 +651,8 @@ def main():
     acao_op.add_argument("--mfa-desativar", action="store_true", help="desliga o MFA")
     acao_op.add_argument("--desativar", action="store_true", help="bloqueia o operador e encerra as sessões")
     acao_op.add_argument("--reativar", action="store_true", help="desfaz o --desativar")
+    acao_op.add_argument("--papel", choices=("admin", "leitura"),
+                         help="admin faz tudo; leitura só consulta")
     op.add_argument("--suspeita-de-vazamento", action="store_true",
                     help="troca a senha antes de 24 h da última troca (senha vazada)")
     op.set_defaults(func=cmd_operador)

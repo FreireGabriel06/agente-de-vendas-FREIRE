@@ -126,7 +126,13 @@ COLUNAS_OPERADORES = {
     "totp_ultimo_passo": "INTEGER",
     "senha_trocada_em": "TEXT",
     "ultimo_login_em": "TEXT",
+    # Lote S11: quem já existia continua podendo tudo.
+    "papel": "TEXT NOT NULL DEFAULT 'admin'",
 }
+
+# Papéis (DPP da Amazon, 1.3: menor privilégio, negar por padrão). "admin"
+# faz tudo; "leitura" só consulta (lista em painel/app.py, LEITURA_PODE).
+PAPEIS = ("admin", "leitura")
 
 
 def inicializar_seguranca():
@@ -170,7 +176,7 @@ def listar_operadores() -> list[dict]:
     """Para a revisão de acessos (DPP 1.2.2: trimestral). Sem hash nem segredo."""
     with conectar() as conn:
         return [dict(l) for l in conn.execute(
-            "SELECT usuario, ativo, totp_ativo, ultimo_login_em, senha_trocada_em,"
+            "SELECT usuario, papel, ativo, totp_ativo, ultimo_login_em, senha_trocada_em,"
             " bloqueado_ate, criado_em FROM operadores ORDER BY usuario")]
 
 
@@ -288,6 +294,26 @@ def desativar_mfa(usuario: str) -> None:
     registrar_evento("atencao", "seguranca", f"MFA desligado: {usuario}")
 
 
+def definir_papel(usuario: str, papel: str) -> None:
+    """Troca o papel. Vale na próxima requisição: a sessão lê o papel do
+    operador a cada chamada. O último administrador ativo não perde o papel."""
+    usuario = (usuario or "").strip().lower()
+    if papel not in PAPEIS:
+        raise FalhaLogin(f"Papel desconhecido. Use: {', '.join(PAPEIS)}.")
+    with conectar() as conn:
+        op = conn.execute("SELECT id, papel FROM operadores WHERE usuario = ?", (usuario,)).fetchone()
+        if op is None:
+            raise FalhaLogin("Operador não encontrado.")
+        if op["papel"] == "admin" and papel != "admin":
+            outros = conn.execute("SELECT COUNT(*) FROM operadores WHERE papel = 'admin' AND ativo = 1"
+                                  " AND id != ?", (op["id"],)).fetchone()[0]
+            if not outros:
+                raise FalhaLogin("Este é o último administrador ativo; promova outro antes.")
+        conn.execute("UPDATE operadores SET papel = ?, atualizado_em = ? WHERE id = ?",
+                     (papel, agora(), op["id"]))
+    registrar_evento("atencao", "seguranca", f"Papel de {usuario}: {op['papel']} -> {papel}")
+
+
 def definir_ativo(usuario: str, ativo: bool) -> None:
     """Desativa (ou reativa) o operador. Desativar derruba as sessões na hora:
     validar_sessao também recusa sessão de operador inativo. Achado S-19."""
@@ -372,11 +398,16 @@ def definir_operador(usuario: str, senha: str, troca_imediata: bool = False) -> 
             conn.execute("DELETE FROM sessoes WHERE operador_id = ?", (atual["id"],))
             acao = "senha trocada" + (" (suspeita de vazamento)" if troca_imediata else "")
         else:
+            # Negar por padrão: só o primeiro administrador nasce admin; os
+            # outros nascem só de leitura e sobem com --papel admin.
+            ha_admin = conn.execute("SELECT 1 FROM operadores WHERE papel = 'admin' AND ativo = 1"
+                                    " LIMIT 1").fetchone()
+            papel = "leitura" if ha_admin else "admin"
             conn.execute(
                 "INSERT INTO operadores (usuario, senha_hash, criado_em, atualizado_em,"
-                " senha_trocada_em) VALUES (?,?,?,?,?)",
-                (usuario, senha_hash, agora(), agora(), agora()))
-            acao = "operador criado"
+                " senha_trocada_em, papel) VALUES (?,?,?,?,?,?)",
+                (usuario, senha_hash, agora(), agora(), agora(), papel))
+            acao = f"operador criado ({papel})"
     registrar_evento("atencao" if troca_imediata else "info", "seguranca", f"{acao}: {usuario}")
     return acao
 
@@ -584,7 +615,7 @@ def validar_sessao(sid: str | None) -> dict | None:
     chave = hash_da_sessao(sid)
     with conectar() as conn:
         s = conn.execute(
-            "SELECT s.*, o.usuario FROM sessoes s JOIN operadores o ON o.id = s.operador_id"
+            "SELECT s.*, o.usuario, o.papel FROM sessoes s JOIN operadores o ON o.id = s.operador_id"
             " WHERE s.id = ? AND o.ativo = 1", (chave,)).fetchone()
         if s is None:
             return None
@@ -595,7 +626,8 @@ def validar_sessao(sid: str | None) -> dict | None:
             return None
         conn.execute("UPDATE sessoes SET ultimo_uso = ? WHERE id = ?",
                      (momento.isoformat(timespec="seconds"), chave))
-        return {"usuario": s["usuario"], "operador_id": s["operador_id"], "csrf": s["csrf"]}
+        return {"usuario": s["usuario"], "operador_id": s["operador_id"], "csrf": s["csrf"],
+                "papel": s["papel"]}
 
 
 def encerrar_sessao(sid: str | None):

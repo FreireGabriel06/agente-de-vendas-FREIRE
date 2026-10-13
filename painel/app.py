@@ -53,6 +53,22 @@ app = FastAPI(title="Agente Comercial", docs_url=None, redoc_url=None, openapi_u
 
 CAMINHOS_LIVRES = {"/login", "/api/login"}
 
+# O que o papel "leitura" pode fazer; o resto é só do "admin" (DPP da Amazon,
+# 1.3: negar por padrão). Fica de fora: aprovar e recusar, revelar comprador,
+# configuração e conexões, eventos de segurança, LGPD, cadastro e ciclo.
+LEITURA_GET_EXATO = {"/", "/api/sessao", "/api/pendencias", "/api/pedidos", "/api/alertas",
+                     "/api/produtos", "/api/fornecedores"}
+LEITURA_GET_PREFIXO = ("/api/pedido/", "/api/produtos/", "/api/fornecedores/", "/api/amazon/")
+LEITURA_POST = {"/api/logout", "/api/preco"}
+
+
+def leitura_pode(metodo: str, caminho: str) -> bool:
+    if metodo in ("GET", "HEAD"):
+        if caminho.endswith("/comprador"):
+            return False
+        return caminho in LEITURA_GET_EXATO or caminho.startswith(LEITURA_GET_PREFIXO)
+    return metodo == "POST" and caminho in LEITURA_POST
+
 
 @app.middleware("http")
 async def exigir_sessao(request: Request, call_next):
@@ -74,7 +90,11 @@ async def exigir_sessao(request: Request, call_next):
         if not secrets.compare_digest(enviado, sessao["csrf"]):
             return JSONResponse({"detail": "Token CSRF inválido."}, status_code=403)
 
+    if sessao["papel"] != "admin" and not leitura_pode(request.method, caminho):
+        return JSONResponse({"detail": "Seu acesso é só de leitura."}, status_code=403)
+
     request.state.operador = sessao["usuario"]
+    request.state.papel = sessao["papel"]
     definir_ator(sessao["usuario"])
     request.state.csrf = sessao["csrf"]
     request.state.sid = sid  # prende o state do OAuth a esta sessão
@@ -799,7 +819,8 @@ def api_logout(request: Request):
 @app.get("/api/sessao")
 def api_sessao(request: Request):
     """O painel busca aqui o token que assina as chamadas que mudam estado."""
-    return {"usuario": request.state.operador, "csrf": request.state.csrf}
+    return {"usuario": request.state.operador, "csrf": request.state.csrf,
+            "papel": request.state.papel}
 
 
 def _pagina_login() -> str:
