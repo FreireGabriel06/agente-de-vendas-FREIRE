@@ -18,9 +18,10 @@ tokens ao cofre. Ele nunca é apagado nem alterado por aqui.
 import time
 
 import requests
+from requests import RequestException
 
 from config import config, DATA_DIR
-from core import cofre
+from core import cofre, erros
 
 PROVEDOR = "mercadolivre"
 
@@ -28,8 +29,9 @@ PROVEDOR = "mercadolivre"
 ARQ_TOKEN = DATA_DIR / ".token_ml.json"
 
 
-class ErroMercadoLivre(Exception):
-    pass
+class ErroMercadoLivre(erros.MensagemSegura):
+    """Mensagem montada aqui: método, caminho, status e código do ML; nunca o
+    corpo da resposta nem a URL com a query (core/erros.py)."""
 
 
 def guardar_tokens(dados: dict) -> int:
@@ -92,14 +94,19 @@ class MercadoLivre:
                 )
             # O refresh vale uma vez só: se o cofre não aceitaria o novo, para aqui.
             cofre.conferir()
-            r = requests.post(f"{self.cfg.base_url}/oauth/token", data={
-                "grant_type": "refresh_token",
-                "client_id": self.cfg.client_id,
-                "client_secret": self.cfg.client_secret,
-                "refresh_token": self.cfg.refresh_token,
-            }, timeout=20)
+            try:
+                r = requests.post(f"{self.cfg.base_url}/oauth/token", data={
+                    "grant_type": "refresh_token",
+                    "client_id": self.cfg.client_id,
+                    "client_secret": self.cfg.client_secret,
+                    "refresh_token": self.cfg.refresh_token,
+                }, timeout=20)
+            except RequestException as e:
+                raise ErroMercadoLivre("Falha ao renovar token: "
+                                       + erros.falha_de_rede("POST", "/oauth/token", e)) from None
             if r.status_code != 200:
-                raise ErroMercadoLivre(f"Falha ao renovar token: {r.status_code} {r.text[:200]}")
+                raise ErroMercadoLivre("Falha ao renovar token: " + erros.descrever(
+                    "POST", "/oauth/token", r.status_code, erros.codigo_do_corpo(r)))
             dados = r.json()
             # O refresh antigo acabou de deixar de valer: o par novo fica na
             # memória do processo e vai para o cofre, sem exceção no caminho.
@@ -128,18 +135,23 @@ class MercadoLivre:
 
     # --------------------------------------------------------- HTTP base
 
+    def _enviar(self, metodo: str, caminho: str, **kwargs):
+        try:
+            return requests.request(metodo, f"{self.cfg.base_url}{caminho}", timeout=25, **kwargs)
+        except RequestException as e:
+            raise ErroMercadoLivre(erros.falha_de_rede(metodo, caminho, e)) from None
+
     def _req(self, metodo: str, caminho: str, **kwargs):
         headers = kwargs.pop("headers", {})
         headers["Authorization"] = f"Bearer {self.token}"
-        r = requests.request(metodo, f"{self.cfg.base_url}{caminho}",
-                             headers=headers, timeout=25, **kwargs)
+        r = self._enviar(metodo, caminho, headers=headers, **kwargs)
         if r.status_code == 401:
             self._pelo_cofre(self._renovar)
             headers["Authorization"] = f"Bearer {self._access_token}"
-            r = requests.request(metodo, f"{self.cfg.base_url}{caminho}",
-                                 headers=headers, timeout=25, **kwargs)
+            r = self._enviar(metodo, caminho, headers=headers, **kwargs)
         if r.status_code >= 400:
-            raise ErroMercadoLivre(f"{metodo} {caminho} -> {r.status_code}: {r.text[:300]}")
+            raise ErroMercadoLivre(erros.descrever(metodo, caminho, r.status_code,
+                                                   erros.codigo_do_corpo(r)))
         return r.json() if r.text else {}
 
     # ------------------------------------------------------------ Pedidos

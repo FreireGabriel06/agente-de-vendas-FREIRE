@@ -420,14 +420,33 @@ def parametros_da_url(texto: str) -> dict:
 
 # ---------------------------------------------------------------- Shopee
 
-def shopee_url_autorizacao(redirect_uri: str) -> str:
+class RetornoRecusado(ValueError):
+    """Retorno de autorização recusado antes de gastar o código; a mensagem
+    é escrita aqui."""
+
+
+def shopee_url_autorizacao(redirect_uri: str, sid: str | None) -> str:
+    """O link de autorização, e um consentimento pendente preso a esta sessão:
+    a Shopee não devolve o nosso state, então o retorno só vale se esta sessão
+    abriu a autorização nos últimos 10 minutos (achado S-04, como na Amazon)."""
     from conectores.shopee import Shopee
     s = Shopee()
     if not s.configurado:
         raise ValueError("Salve o Partner ID, o Partner Key e o Shop ID da Shopee primeiro.")
     # O link da Shopee expira em 5 minutos — por isso ele é gerado no clique,
     # e não guardado na página.
-    return s.url_autorizacao(redirect_uri)
+    url = s.url_autorizacao(redirect_uri)
+    seguranca.criar_state_oauth("shopee-consentimento", sid)
+    return url
+
+
+def shopee_concluir(code: str, shop_id: str, sid: str | None) -> dict:
+    """Retorno da Shopee: exige o consentimento aberto por esta sessão e um
+    shop_id numérico antes de gastar o código."""
+    seguranca.consumir_consentimento_pendente("shopee-consentimento", sid)
+    if not re.fullmatch(r"[0-9]{1,20}", shop_id or ""):
+        raise RetornoRecusado("A Shopee devolveu um shop_id inválido. Autorize de novo pelo painel.")
+    return shopee_trocar_code(code, shop_id)
 
 
 def shopee_trocar_code(code: str, shop_id: str) -> dict:

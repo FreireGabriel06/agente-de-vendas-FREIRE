@@ -35,6 +35,7 @@ from starlette.concurrency import run_in_threadpool
 from config import config
 from db import conectar, inicializar, registrar_evento
 from core import aprovacao, cadastro, cofre, conformidade, privacidade, seguranca
+from core.erros import mensagem_segura
 from core.estados import Estado, ESTADOS_CRITICOS, historico
 from inteligencia import precificacao, tendencias
 
@@ -238,7 +239,9 @@ def api_aprovar(aprovacao_id: int, request: Request):
     except aprovacao.JaDecidida:
         raise HTTPException(409, "Esta pendência já foi decidida por outra chamada.")
     except Exception as e:
-        raise HTTPException(500, str(e))
+        # Sem corpo de resposta do marketplace nem mensagem de exceção
+        # inesperada na tela (achado S-06); o evento guarda a pilha.
+        raise HTTPException(500, mensagem_segura(e))
     registrar_evento("info", "aprovacao",
                      f"Ação {aprovacao_id} liberada por {request.state.operador}")
     return {"ok": True, "resultado": resultado, "simulado": aprovacao.foi_simulado(resultado)}
@@ -497,7 +500,8 @@ def api_url_autorizacao(provedor: str, request: Request):
         if provedor == "mercadolivre":
             return {"url": configurar.ml_url_autorizacao(request.state.sid)}
         if provedor == "shopee":
-            return {"url": configurar.shopee_url_autorizacao(_redirect_uri(request, "shopee"))}
+            return {"url": configurar.shopee_url_autorizacao(_redirect_uri(request, "shopee"),
+                                                            request.state.sid)}
         if provedor == "amazon":
             return {"url": configurar.amazon_url_autorizacao(request.state.sid)}
         raise HTTPException(400, "Provedor desconhecido.")
@@ -678,21 +682,22 @@ def oauth_shopee_iniciar(request: Request):
     from fastapi.responses import RedirectResponse
     from painel import configurar
     try:
-        return RedirectResponse(configurar.shopee_url_autorizacao(_redirect_uri(request, "shopee")))
+        return RedirectResponse(configurar.shopee_url_autorizacao(_redirect_uri(request, "shopee"),
+                                                                  request.state.sid))
     except (ValueError, cofre.ErroCofre) as e:
         return HTMLResponse(_pagina_retorno(False, str(e)), status_code=400)
 
 
 @app.get("/oauth/shopee/retorno", response_class=HTMLResponse)
-def oauth_shopee_retorno(code: str = "", shop_id: str = ""):
+def oauth_shopee_retorno(request: Request, code: str = "", shop_id: str = ""):
     from painel import configurar
     if not code:
         return _pagina_retorno(False, "A Shopee não devolveu o código. "
                                       "O link de autorização expira em 5 minutos — tente de novo.")
     try:
-        d = configurar.shopee_trocar_code(code, shop_id)
+        d = configurar.shopee_concluir(code, shop_id, request.state.sid)
         return _pagina_retorno(True, f"Shopee conectada. Loja {d['shop_id']}.")
-    except cofre.ErroCofre as e:
+    except (seguranca.StateInvalido, configurar.RetornoRecusado, cofre.ErroCofre) as e:
         return _pagina_retorno(False, str(e))
     except Exception as e:
         return _pagina_retorno(False, _falha_generica("Shopee", e))

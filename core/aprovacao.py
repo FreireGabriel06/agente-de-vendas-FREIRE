@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from core import conformidade
+from core.erros import MensagemSegura, mensagem_segura, pilha_sem_mensagem
 from db import conectar, agora, registrar_evento
 
 TIPOS_SENSIVEIS = {"compra_fornecedor", "resposta_cliente", "ajuste_preco", "publicar_anuncio"}
@@ -45,7 +46,7 @@ def foi_simulado(resultado) -> bool:
     return isinstance(resultado, str) and resultado.startswith(PREFIXO_SIMULACAO)
 
 
-class BloqueadoPelaConformidade(Exception):
+class BloqueadoPelaConformidade(MensagemSegura):
     """A ação está bloqueada pela conformidade e não foi executada. A
     mensagem é a mesma que o painel devolve com HTTP 409."""
 
@@ -116,7 +117,7 @@ def checar(aprovacao: Aprovacao) -> conformidade.Resultado:
     return conformidade.verificar_pendencia(aprovacao.tipo, aprovacao.payload)
 
 
-class JaDecidida(ValueError):
+class JaDecidida(ValueError, MensagemSegura):
     """A pendência não está mais 'pendente': outra aprovação ou recusa chegou
     antes, ou o id não existe. Nada foi executado nem alterado por esta chamada.
     É ValueError para quem já tratava o erro antigo."""
@@ -187,8 +188,14 @@ def aprovar(aprovacao_id: int, executores: dict[str, Callable[[dict], str]]):
             registrar_evento("info", "aprovacao", f"Ação {aprovacao_id} ({item.tipo}) executada")
         return resultado
     except Exception as e:
-        _concluir(aprovacao_id, "erro", str(e)[:500])
-        registrar_evento("erro", "aprovacao", f"Ação {aprovacao_id} falhou: {e}")
+        # O resultado e o evento ficam com mensagem_segura: de um conector, o
+        # texto montado por ele (sem corpo de resposta); de outra exceção, só
+        # o tipo, e a pilha sem a mensagem no detalhe do evento. Achado S-06.
+        motivo = mensagem_segura(e)
+        _concluir(aprovacao_id, "erro", motivo)
+        registrar_evento("erro", "aprovacao", f"Ação {aprovacao_id} falhou: {motivo}",
+                         None if isinstance(e, MensagemSegura)
+                         else {"traceback": pilha_sem_mensagem(e)})
         raise
 
 
@@ -201,5 +208,5 @@ def aprovar_em_lote(ids: list[int], executores: dict[str, Callable[[dict], str]]
             aprovar(i, executores)
             sucesso.append(i)
         except Exception as e:
-            falhas.append((i, str(e)))
+            falhas.append((i, mensagem_segura(e)))
     return sucesso, falhas

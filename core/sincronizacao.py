@@ -16,6 +16,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 from conectores import amazon as conector
+from core.erros import mensagem_segura
 from db import agora, conectar, registrar_evento
 
 FONTE = "amazon_pedidos"
@@ -57,7 +58,7 @@ def _falhou(fonte: str, erro: conector.ErroAmazon, rotulo: str) -> dict:
     else:
         resultado = "erro"
     with conectar() as conn:
-        _marcar(conn, fonte, resultado=resultado, detalhe=str(erro)[:300])
+        _marcar(conn, fonte, resultado=resultado, detalhe=mensagem_segura(erro, 300))
     nivel = "info" if resultado == "indisponivel" else "erro"
     registrar_evento(nivel, "amazon", f"Sincronização de {rotulo}: {resultado}. {erro}")
     return {"erro": str(erro), "resultado": resultado}

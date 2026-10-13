@@ -261,7 +261,9 @@ def test_retorno_da_shopee_com_erro_nao_ecoa_nada(sessao, monkeypatch):
 
     monkeypatch.setattr(configurar, "shopee_trocar_code", falha)
     cliente, _ = sessao
-    r = cliente.get("/oauth/shopee/retorno", params={"code": "x", "shop_id": "<script>alert(2)</script>"})
+    # O retorno só vale depois de esta sessão abrir a autorização (lote S6).
+    assert cliente.get("/api/configuracao/url-autorizacao/shopee").status_code == 200
+    r = cliente.get("/oauth/shopee/retorno", params={"code": "x", "shop_id": "2000002"})
 
     assert r.status_code == 200
     assert "<script>" not in r.text and "VAZADO" not in r.text
