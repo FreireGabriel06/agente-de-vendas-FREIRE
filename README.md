@@ -109,6 +109,7 @@ What the automated suite covers, and how to run it, is under [Tests](#tests).
 | Panel login: one operator, server-side session, CSRF token in a header | `core/seguranca.py`, `painel/app.py` | Tested |
 | Second factor by authenticator app (TOTP, RFC 6238, standard library only): secret in the encrypted vault, a code works once, a wrong code counts toward the lockout; operator deactivation ends every session at once — see [Panel security](#panel-security) | `core/seguranca.py`, `cli.py`, `painel/app.py` | Tested |
 | HTTPS: the panel serves TLS itself (`TLS_CERT`, `TLS_CHAVE`) or trusts `X-Forwarded-Proto` only from a reverse proxy (`PROXY_HTTPS`, `PROXY_IPS`); it refuses to start on a non-local address without one of them; `Secure` session cookie and HSTS under HTTPS; `nosniff`, `X-Frame-Options: DENY` and `Referrer-Policy` on every response | `executar.py`, `painel/app.py` | Tested |
+| Panel exposed to a network: login limited per address (5 errors in 15 minutes → HTTP 429) and per account (20 consecutive errors → 15-minute lock), so one attacker cannot lock the operator out; an unknown operator costs the same password check as a wrong password; session id stored only as SHA-256; `Host` must be local or listed in `HOSTS_PAINEL`; Content-Security-Policy and `Cache-Control: no-store` on every response; login only as JSON; no OpenAPI schema; numeric inputs checked with ranges — see [Panel security](#panel-security) | `core/seguranca.py`, `painel/app.py`, `executar.py` | Tested |
 | OAuth return: `state` created by the same panel session, single use, valid for 10 minutes; return pages escape their output and show fixed error messages | `core/seguranca.py`, `painel/app.py`, `painel/configurar.py` | Tested with a fake token endpoint |
 | Data folder for `.env`, database, keys, legacy token files and purchase orders: `AGENTE_DADOS`, the executable's folder, or the project folder | `config.py` | Tested |
 | Panel port and worker interval from `.env` or the environment (`PORTA_PAINEL`, `INTERVALO_WORKER`); a non-numeric or out-of-range value falls back to the default with a warning | `config.py`, `executar.py`, `worker.py` | Tested |
@@ -406,8 +407,9 @@ outside loopback fails the test.
 
 What it covers:
 
-- **Panel login:** password hashing, wrong password, lockout after five
-  attempts and the counter reset by a successful login, 401 for the API and a
+- **Panel login:** password hashing, wrong password, the limit per address
+  and the lock per account (an attacker on one address cannot lock the
+  operator out), the counter reset by a successful login, 401 for the API and a
   redirect to `/login` for pages without a session, the 30-minute idle and
   8-hour session limits, sessions ended by a password change, CSRF on
   state-changing calls, logout, and the operator recorded when buyer data is
@@ -773,6 +775,7 @@ Reply drafts use the official `anthropic` Python SDK
 | `HOST_PAINEL` | `127.0.0.1` | Panel address. Any other address needs HTTPS (next rows); the panel refuses to start without it |
 | `TLS_CERT`, `TLS_CHAVE` | empty | Certificate and private key files (PEM): the panel serves HTTPS itself. Set both or neither |
 | `PROXY_HTTPS`, `PROXY_IPS` | `false`, `127.0.0.1` | A reverse proxy in front does HTTPS; the panel trusts `X-Forwarded-Proto` only from these addresses |
+| `HOSTS_PAINEL` | empty | Comma-separated names (or IPs) the panel answers to besides `127.0.0.1`, `localhost` and `::1`; required off loopback |
 | `SESSAO_OCIOSA_MIN`, `SESSAO_MAX_HORAS` | `30`, `8` | Idle timeout and maximum session lifetime |
 | `WORKER_ATIVO`, `ABRIR_NAVEGADOR` | `true` | Start the worker; open the browser |
 | `ESTOQUE_MINIMO`, `ALERTA_DADO_VELHO_HORAS` | `3`, `6` | Alerts: available stock at or below this opens "low stock"; data without a successful sync for longer than this many hours opens "stale data" |
@@ -875,7 +878,16 @@ HTTPS is required before `HOST_PAINEL` leaves `127.0.0.1`. Either give the
 panel a certificate (`TLS_CERT` and `TLS_CHAVE`), or put a reverse proxy that
 does HTTPS (Caddy, nginx) in front and set `PROXY_HTTPS=true`; the panel then
 trusts `X-Forwarded-Proto` only from `PROXY_IPS`. Under HTTPS the session
-cookie is `Secure` and responses carry HSTS.
+cookie is `Secure` and responses carry HSTS. Off loopback, also list in
+`HOSTS_PAINEL` the name clients use (for example `painel.example.com`); a
+request with any other `Host` gets HTTP 400.
+
+Wrong logins are limited twice. Five errors from one address within 15
+minutes make that address wait (HTTP 429 with `Retry-After`), whatever the
+operator name. Twenty consecutive errors on one account, from any address,
+lock that account for 15 minutes. Behind a proxy the address comes from
+`X-Forwarded-For`, trusted only from `PROXY_IPS`; with a misconfigured proxy
+every client shares the proxy's address and one attacker slows everyone.
 
 ## Design decisions
 

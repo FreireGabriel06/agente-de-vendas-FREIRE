@@ -119,6 +119,12 @@ def main():
         print(f"Recusando iniciar em {host} sem HTTPS. Defina TLS_CERT e TLS_CHAVE, ou "
               "PROXY_HTTPS=true com um proxy HTTPS na frente.")
         return
+    # O painel só atende pelos nomes de HOSTS_PAINEL (e pelos locais); sem
+    # eles, toda chamada de fora levaria 400.
+    if not local and not os.getenv("HOSTS_PAINEL", "").strip():
+        print(f"Recusando iniciar em {host} sem HOSTS_PAINEL: defina o nome (ou IP) pelo "
+              "qual o painel é acessado, por exemplo HOSTS_PAINEL=painel.exemplo.com.br")
+        return
 
     if os.getenv("WORKER_ATIVO", "true").lower() == "true":
         threading.Thread(target=_laco_worker, daemon=True).start()

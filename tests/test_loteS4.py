@@ -89,10 +89,11 @@ def test_dois_logins_ao_mesmo_tempo_com_o_mesmo_codigo_so_um_entra(novo_cliente,
 
 
 def test_codigo_errado_conta_para_o_bloqueio(novo_cliente, com_mfa):
-    cliente = novo_cliente()
-    for _ in range(seguranca.TENTATIVAS_ATE_BLOQUEIO):
+    por_endereco = seguranca.FALHAS_POR_IP - 1
+    for i in range(seguranca.TENTATIVAS_ATE_BLOQUEIO):
+        cliente = novo_cliente(client=(f"10.1.{i // por_endereco}.1", 50000))
         assert login(cliente, "000000").status_code == 401
-    r = login(cliente, codigo_agora(desvio=1))
+    r = login(novo_cliente(client=("10.1.250.1", 50000)), codigo_agora(desvio=1))
     assert r.status_code == 401 and "bloqueado" in r.json()["detail"]
 
 
