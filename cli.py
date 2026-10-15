@@ -198,6 +198,27 @@ def cmd_operador(args):
           + f": {args.usuario}")
 
 
+def cmd_resolver(args):
+    """Fecha uma aprovação incerta (interrompida durante a execução) depois de
+    conferir no marketplace. Sem id, lista as incertas."""
+    from core import aprovacao
+
+    inicializar()
+    if args.id is None:
+        itens = aprovacao.incertas()
+        if not itens:
+            print("Nenhuma aprovação incerta.")
+        for a in itens:
+            print(f"  [{a.id}] {a.tipo}: {a.resumo}")
+        return
+    if args.resultado is None:
+        print("Diga o que conferiu: executada (a ação saiu) ou erro (não saiu).")
+        sys.exit(2)
+    aprovacao.resolver_incerta(args.id, saiu=args.resultado == "executada",
+                               ator=f"cli ({_usuario_do_sistema()})")
+    print(f"Aprovação {args.id} resolvida como {args.resultado}.")
+
+
 def cmd_amazon(args):
     """Dados da Amazon. apagar-dados é a exclusão do DPP da Amazon (1.7)."""
     from core import sincronizacao
@@ -659,6 +680,11 @@ def main():
 
     ops = sub.add_parser("operadores", help="lista os operadores (revisão de acessos)")
     ops.set_defaults(func=cmd_operadores)
+
+    rv = sub.add_parser("resolver", help="aprovação interrompida: lista, ou fecha depois de conferir")
+    rv.add_argument("id", type=int, nargs="?")
+    rv.add_argument("resultado", nargs="?", choices=("executada", "erro"))
+    rv.set_defaults(func=cmd_resolver)
 
     am = sub.add_parser("amazon", help="dados da Amazon")
     acoes_am = am.add_subparsers(dest="acao", required=True)

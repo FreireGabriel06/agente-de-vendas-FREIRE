@@ -500,7 +500,7 @@ def _compra_que_impede_reanalise(conn, pedido_id: int) -> str | None:
         if compra["status"] == "pendente":
             return (f"a compra do pedido {pedido_id} está na fila (pendência {compra['id']}); "
                     "aprove-a ou recuse-a antes de reanalisar.")
-        if compra["status"] in ("aprovada", "erro") or (
+        if compra["status"] in ("aprovada", "erro", "incerta") or (
                 compra["status"] == "executada" and not aprovacao.foi_simulado(compra["resultado"])):
             return (f"a aprovação de compra {compra['id']} deste pedido ficou '{compra['status']}': "
                     "a ordem de compra pode ter sido gravada (confira ordens_de_compra/), e "
@@ -838,6 +838,7 @@ def _passada() -> dict:
     ml = MercadoLivre()
 
     for nome, func in [
+        ("interrompidas", aprovacao.recuperar_interrompidas),
         ("ingeridos", lambda: ingerir_mercadolivre(ml)),
         ("analisados", analisar_novos),
         ("ordens_montadas", montar_ordens_de_compra),

@@ -46,23 +46,34 @@ def intervalo() -> int:
     return config.intervalo_worker
 
 
-def _laco_worker():
+# Pedido de parada do worker: o laço termina o ciclo em andamento e não
+# começa outro. Ctrl+C no painel aciona (main, depois de o uvicorn parar).
+PARAR = threading.Event()
+PARADA_MAXIMA_S = 30
+
+
+def _laco_worker(parar: threading.Event = PARAR):
     """Worker em segundo plano. Falha num ciclo não derruba o painel. Com outro
     ciclo em andamento (a tecla 'c' do painel), worker.ciclo pula a passada."""
+    from core.erros import mensagem_segura, pilha_sem_mensagem
+    from db import definir_ator, registrar_evento
     from worker import ciclo
-    from db import registrar_evento
 
+    definir_ator("worker")
     # Espera o painel subir antes do primeiro ciclo.
-    time.sleep(5)
-    while True:
+    if parar.wait(5):
+        return
+    while not parar.is_set():
         try:
             ciclo()
         except Exception as e:
             try:
-                registrar_evento("erro", "executar", f"Ciclo falhou: {e}")
+                # Só o tipo e a pilha: a mensagem pode repetir um valor decifrado.
+                registrar_evento("erro", "executar", f"Ciclo falhou: {mensagem_segura(e)}",
+                                 {"traceback": pilha_sem_mensagem(e)})
             except Exception:
                 pass
-        time.sleep(intervalo())
+        parar.wait(intervalo())
 
 
 def _abrir_navegador():
@@ -132,8 +143,10 @@ def main():
               "Ative com: python cli.py operador --usuario NOME --mfa-ativar")
         return
 
+    worker_thread = None
     if os.getenv("WORKER_ATIVO", "true").lower() == "true":
-        threading.Thread(target=_laco_worker, daemon=True).start()
+        worker_thread = threading.Thread(target=_laco_worker, daemon=True, name="worker")
+        worker_thread.start()
         print(f"Worker ativo, ciclo a cada {intervalo()}s.")
     else:
         print("Worker desligado (WORKER_ATIVO=false). Use a tecla 'c' no painel "
@@ -152,7 +165,14 @@ def main():
     print(f"Painel em {esquema}://127.0.0.1:{porta()}  (Ctrl+C encerra)")
 
     import uvicorn
-    uvicorn.run(app, host=host, port=porta(), log_level="warning", **https)
+    try:
+        uvicorn.run(app, host=host, port=porta(), log_level="warning", **https)
+    finally:
+        # Deixa o ciclo em andamento terminar (o banco fica coerente) antes de
+        # o processo sair; um ciclo travado não segura a saída por mais que isto.
+        PARAR.set()
+        if worker_thread is not None:
+            worker_thread.join(timeout=PARADA_MAXIMA_S)
 
 
 if __name__ == "__main__":

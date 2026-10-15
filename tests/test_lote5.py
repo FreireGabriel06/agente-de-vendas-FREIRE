@@ -230,22 +230,24 @@ def test_iniciadores_nao_anunciam_porta_fixa():
 def test_laco_do_worker_espera_o_intervalo_do_config(monkeypatch):
     import executar
 
-    class Parar(Exception):
-        pass
+    class ParadaFalsa:
+        """Faz as vezes do threading.Event: pede parada na terceira espera."""
+        def __init__(self):
+            self.esperas = []
 
-    esperas = []
+        def wait(self, segundos):
+            self.esperas.append(segundos)
+            return self.is_set()
 
-    def dormir(segundos):
-        esperas.append(segundos)
-        if len(esperas) == 2:
-            raise Parar
+        def is_set(self):
+            return len(self.esperas) >= 3
 
+    ciclos = []
     monkeypatch.setattr(config.config, "intervalo_worker", 42)
-    monkeypatch.setattr(executar.time, "sleep", dormir)
-    monkeypatch.setattr(worker, "ciclo", lambda: {})
-    with pytest.raises(Parar):
-        executar._laco_worker()
-    assert esperas == [5, 42]
+    monkeypatch.setattr(worker, "ciclo", lambda: ciclos.append(1) or {})
+    parada = ParadaFalsa()
+    executar._laco_worker(parada)
+    assert parada.esperas == [5, 42, 42] and len(ciclos) == 2
 
 
 def test_rodar_do_worker_usa_o_intervalo_do_config(monkeypatch):
