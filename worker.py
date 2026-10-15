@@ -857,6 +857,14 @@ def _passada() -> dict:
                              {"traceback": _pilha(e)})
 
     resumo["pendentes_aprovacao"] = len(aprovacao.pendentes())
+    # Para a checagem de saúde (core/saude.py): quando terminou e quantas
+    # etapas falharam.
+    falhas = sum(1 for v in resumo.values() if isinstance(v, str) and v.startswith("erro:"))
+    with conectar() as conn:
+        conn.execute("INSERT INTO estado_sistema (chave, valor, atualizado_em)"
+                     " VALUES ('ciclo_fim', ?, ?) ON CONFLICT(chave) DO UPDATE SET"
+                     " valor = excluded.valor, atualizado_em = excluded.atualizado_em",
+                     (str(falhas), agora()))
     return resumo
 
 

@@ -198,6 +198,19 @@ def cmd_operador(args):
           + f": {args.usuario}")
 
 
+def cmd_saude(args):
+    """Saúde da instância (core/saude.py). Saída 0 ok, 1 atenção, 2 falha:
+    serve para cron ou monitoramento."""
+    from core import saude
+
+    inicializar()
+    r = saude.verificar(completo=args.completo)
+    for item in r["itens"]:
+        print(f"  [{item['nivel']:<7}] {item['nome']:<20} {item['detalhe']}")
+    print(f"Status: {r['status']}")
+    sys.exit(saude.NIVEIS.index(r["status"]))
+
+
 def cmd_resolver(args):
     """Fecha uma aprovação incerta (interrompida durante a execução) depois de
     conferir no marketplace. Sem id, lista as incertas."""
@@ -680,6 +693,10 @@ def main():
 
     ops = sub.add_parser("operadores", help="lista os operadores (revisão de acessos)")
     ops.set_defaults(func=cmd_operadores)
+
+    sd = sub.add_parser("saude", help="saúde da instância; saída 0 ok, 1 atenção, 2 falha")
+    sd.add_argument("--completo", action="store_true", help="também integridade do banco e trilha")
+    sd.set_defaults(func=cmd_saude)
 
     rv = sub.add_parser("resolver", help="aprovação interrompida: lista, ou fecha depois de conferir")
     rv.add_argument("id", type=int, nargs="?")

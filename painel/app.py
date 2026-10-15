@@ -49,7 +49,7 @@ app = FastAPI(title="Agente Comercial", docs_url=None, redoc_url=None, openapi_u
 # O retorno do OAuth também exige sessão: o cookie é SameSite=Lax e viaja na
 # navegação de volta do marketplace.
 
-CAMINHOS_LIVRES = {"/login", "/api/login"}
+CAMINHOS_LIVRES = {"/login", "/api/login", "/saude"}
 
 # O que o papel "leitura" pode fazer; o resto é só do "admin" (DPP da Amazon,
 # 1.3: negar por padrão). Fica de fora: aprovar e recusar, revelar comprador,
@@ -350,6 +350,21 @@ def api_lgpd():
 @app.post("/api/lgpd/expurgar")
 def api_expurgar():
     return {"expurgados": privacidade.expurgar()}
+
+
+@app.get("/saude")
+def saude_publica():
+    """Para monitor externo, sem login: só o status (core/saude.py). Falha
+    responde 503, para o monitor alarmar; os detalhes ficam em /api/saude."""
+    from core import saude
+    estado = saude.verificar()["status"]
+    return JSONResponse({"status": estado}, status_code=503 if estado == "falha" else 200)
+
+
+@app.get("/api/saude")
+def api_saude():
+    from core import saude
+    return saude.verificar()
 
 
 @app.get("/api/eventos")

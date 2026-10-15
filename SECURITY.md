@@ -51,6 +51,9 @@ The software cannot provide these; whoever runs an instance does:
   penetration test.
 - People: data protection training every year; confidentiality clauses; the
   access review every quarter (`python cli.py operadores`), kept as a record.
+- Monitoring: point an uptime monitor at `GET /saude` (no login; HTTP 503
+  means failure) and run `python cli.py saude --completo` daily; act on
+  `atencao` and `falha`.
 - Log review at least every two weeks: read the warning events and run
   `python cli.py eventos --verificar`; write the printed last hash in the
   review record, outside the machine, so a rewritten trail is noticed.
