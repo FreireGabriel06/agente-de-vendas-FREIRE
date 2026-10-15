@@ -22,6 +22,13 @@ def ciclo_terminado(quando=None, falhas=0):
                      " atualizado_em = excluded.atualizado_em", (str(falhas), quando or agora()))
 
 
+def backup_feito(quando=None):
+    with conectar() as conn:
+        conn.execute("INSERT INTO estado_sistema (chave, valor, atualizado_em) VALUES"
+                     " ('backup_ultimo', NULL, ?) ON CONFLICT(chave) DO UPDATE SET"
+                     " atualizado_em = excluded.atualizado_em", (quando or agora(),))
+
+
 def item(r, nome):
     return next(i for i in r["itens"] if i["nome"] == nome)
 
@@ -33,6 +40,7 @@ def worker_ligado(monkeypatch):
 
 def test_instancia_saudavel():
     ciclo_terminado()
+    backup_feito()
     r = saude.verificar(completo=True)
     assert r["status"] == "ok", r
     assert {i["nome"] for i in r["itens"]} >= {"banco", "cofre", "chave_lgpd", "worker", "disco", "trilha"}
@@ -114,6 +122,7 @@ def test_verificacao_quebrada_nao_esconde_as_outras(monkeypatch):
 
 def test_saude_publica_sem_login_so_com_o_status(cliente):
     ciclo_terminado()
+    backup_feito()
     r = cliente.get("/saude")
     assert r.status_code == 200 and r.json() == {"status": "ok"}
     ciclo_terminado(_ha(hours=2))
@@ -145,8 +154,25 @@ def test_saude_publica_nao_grava_nada(cliente):
 def test_cli_saude_com_codigo_de_saida(monkeypatch, capsys, quando, codigo):
     import cli
     ciclo_terminado(_ha(hours=2) if quando else None)
+    backup_feito()
     monkeypatch.setattr(sys, "argv", ["cli.py", "saude", "--completo"])
     with pytest.raises(SystemExit) as saida:
         cli.main()
     assert saida.value.code == codigo
     assert "Status:" in capsys.readouterr().out
+
+
+def test_backup_atrasado_ou_ausente_pede_atencao(monkeypatch):
+    assert "nenhum backup" in item(saude.verificar(), "backup")["detalhe"]
+    backup_feito(_ha(days=8))
+    assert item(saude.verificar(), "backup")["nivel"] == "atencao"
+    monkeypatch.setenv("BACKUP_MAX_DIAS", "10")
+    assert item(saude.verificar(), "backup")["nivel"] == "ok"
+
+
+def test_criar_backup_registra_a_data(isolamento, monkeypatch):
+    from core import backup
+    monkeypatch.setattr(backup, "SCRYPT_N", 2 ** 14)
+    backup.criar(isolamento / "bk", "senha-de-backup-longa-1")
+    r = item(saude.verificar(), "backup")
+    assert r["nivel"] == "ok" and str(isolamento) not in r["detalhe"]

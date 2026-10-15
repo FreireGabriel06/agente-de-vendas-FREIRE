@@ -18,6 +18,7 @@ import shutil
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
+import config as config_mod
 from config import DATA_DIR, config
 from db import agora, conectar, verificar_trilha
 
@@ -100,6 +101,24 @@ def _worker() -> tuple[str, str]:
     return "ok", f"último ciclo em {linha['atualizado_em']}"
 
 
+def _backup() -> tuple[str, str]:
+    """Backup mais velho que BACKUP_MAX_DIAS (padrão 7) pede atenção: sem
+    cópia recente, um disco perdido leva os dados (DPP 2.7.4)."""
+    maximo = config_mod._inteiro("BACKUP_MAX_DIAS", 7, 1, 365)
+    try:
+        with conectar() as conn:
+            linha = conn.execute("SELECT atualizado_em FROM estado_sistema"
+                                 " WHERE chave = 'backup_ultimo'").fetchone()
+    except sqlite3.OperationalError:
+        linha = None
+    if linha is None:
+        return "atencao", "nenhum backup registrado; rode python cli.py backup criar"
+    idade = datetime.now(timezone.utc) - datetime.fromisoformat(linha["atualizado_em"])
+    if idade > timedelta(days=maximo):
+        return "atencao", f"último backup há {idade.days} dia(s); o limite é {maximo}"
+    return "ok", f"último backup em {linha['atualizado_em']}"
+
+
 def _contagem(sql: str, nome: str, conselho: str) -> tuple[str, str]:
     try:
         with conectar() as conn:
@@ -140,6 +159,7 @@ def verificar(completo: bool = False) -> dict:
             "SELECT COUNT(*) FROM alertas WHERE resolvido_em IS NULL",
             "alerta(s) aberto(s)", "veja /api/alertas")),
         ("disco", _disco),
+        ("backup", _backup),
     ]
     if completo:
         verificacoes.append(("trilha", _trilha))
