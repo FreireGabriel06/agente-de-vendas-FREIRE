@@ -31,6 +31,7 @@ import time
 import requests
 from requests import RequestException
 
+import config as config_mod
 from config import DATA_DIR
 from core import cofre, erros
 import os
@@ -71,8 +72,8 @@ def _chamar(metodo: str, caminho: str, enviar) -> dict:
 
 class Shopee:
     def __init__(self):
-        self.partner_id = int(os.getenv("SHOPEE_PARTNER_ID", "0") or 0)
-        self.shop_id = int(os.getenv("SHOPEE_SHOP_ID", "0") or 0)
+        self.partner_id = config_mod._inteiro("SHOPEE_PARTNER_ID", 0, 0)
+        self.shop_id = config_mod._inteiro("SHOPEE_SHOP_ID", 0, 0)
         self.host = HOST_TESTE if os.getenv("SHOPEE_SANDBOX", "true").lower() == "true" else HOST_PROD
         self._access_token = ""
         self._expira_em = 0

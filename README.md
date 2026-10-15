@@ -756,6 +756,11 @@ Reply drafts use the official `anthropic` Python SDK
 
 ### Variables
 
+`.env` does not strip a comment at the end of a line (`30 # minutes` is not a number). A bad 
+whole-number setting (port, worker interval, session limits, retention, supplier lead time, 
+Shopee ids) prints a warning and uses its default; a bad money or percentage setting 
+(margin, cap, tax rate) stops the program, because guessing it could buy at a loss.
+
 | Variables | Default | Purpose |
 |---|---|---|
 | `ML_CLIENT_ID`, `ML_CLIENT_SECRET` | empty | Mercado Livre application; the panel stores the secret in the vault |
