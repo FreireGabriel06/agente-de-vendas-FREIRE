@@ -212,6 +212,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_alerta_aberto ON alertas(tipo, chave) WHER
 -- Uma linha por fonte de dados: cursor, última tentativa, último sucesso e
 -- o resultado. Último sucesso e última tentativa são separados: uma falha não
 -- apaga a data do último dado válido.
+-- Estado do sistema em chave e valor (lote de estrutura E3): o fim do
+-- último ciclo do worker, lido pela checagem de saúde (core/saude.py).
+CREATE TABLE IF NOT EXISTS estado_sistema (
+    chave          TEXT PRIMARY KEY,
+    valor          TEXT,
+    atualizado_em  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sincronizacoes (
     fonte              TEXT PRIMARY KEY,
     cursor             TEXT,
