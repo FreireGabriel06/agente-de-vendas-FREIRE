@@ -16,4 +16,6 @@ regexes = [
   '''"(access|refresh)_token": "(at|rt)-truncado-segredo-8[12]"''',
   # tests/test_lote5.py: "api" seguido de um nome de campo, não de um valor.
   '''cadastrar\(canal="api", categoria_regulada=''',
+  # tests/test_saude.py: valor do cofre que a mensagem de erro não pode repetir.
+  '''guardar_segredo\("ML_CLIENT_SECRET", "valor-unico-do-cofre-91"\)''',
 ]
