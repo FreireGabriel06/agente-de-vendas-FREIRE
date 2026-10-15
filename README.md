@@ -1025,7 +1025,9 @@ core/                    estados (state machine), aprovacao (queue),
 conectores/              mercadolivre, shopee, amazon
 inteligencia/            precificacao (margin), tendencias (niche research)
 atendimento/             persona, reply bot and Claude API client (official SDK)
-painel/                  app.py (FastAPI routes), configurar.py (connections), painel.html
+painel/                  app.py (assembles the app), protecao.py (session, CSRF, roles, Host,
+                         headers), rotas_*.py (routes by area), configurar.py (connections),
+                         painel.html
 iniciar.bat, iniciar.sh  first-run setup and start
 organizar.py             rebuilds the folder layout when files were downloaded one by one
 agente.spec              PyInstaller build spec (not verified)

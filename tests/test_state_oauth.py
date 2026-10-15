@@ -94,8 +94,19 @@ def recusas_registradas():
 
 # ------------------------------------------------------------------ estrutura
 
+def _todas_as_rotas(rotas):
+    """As rotas do app, também as de routers incluídos (o FastAPI recente
+    guarda cada router incluído como um objeto com original_router)."""
+    for r in rotas:
+        if hasattr(r, "original_router"):
+            yield from _todas_as_rotas(r.original_router.routes)
+        else:
+            yield r
+
+
 def test_rota_de_retorno_do_ml_existe_uma_vez():
-    rotas = [r for r in modulo_app.app.routes if getattr(r, "path", "") == "/oauth/ml/retorno"]
+    rotas = [r for r in _todas_as_rotas(modulo_app.app.routes)
+             if getattr(r, "path", "") == "/oauth/ml/retorno"]
     assert len(rotas) == 1
 
 
