@@ -24,6 +24,7 @@ margem de lucro paga uma conta suspensa ou uma compra errada em lote.
 """
 import json
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 from core import conformidade
@@ -127,6 +128,13 @@ class JaDecidida(ValueError, MensagemSegura):
 #   pendente -> aprovada   só por uma aprovação (UPDATE condicional, rowcount 1)
 #   pendente -> recusada   só a partir de 'pendente'
 #   aprovada -> executada | erro   só pelo executor que reservou o item
+#   aprovada -> incerta    o processo caiu durante a execução (S-83)
+#   incerta  -> executada | erro   só por quem conferiu no marketplace
+
+# Um executor termina bem antes disto (chamadas com timeout de 25 a 30 s e
+# poucas tentativas). Passado este tempo em 'aprovada', o processo que
+# executava caiu: o item vira 'incerta', e ninguém repete a ação sozinho.
+EXECUCAO_MAXIMA_MIN = 10
 def _mudar(aprovacao_id: int, de: str, para: str, resultado: str | None = None) -> bool:
     with conectar() as conn:
         cur = conn.execute(
@@ -142,6 +150,51 @@ def _concluir(aprovacao_id: int, status: str, resultado: str) -> None:
         registrar_evento("atencao", "aprovacao",
                          f"Ação {aprovacao_id}: estado divergente ao concluir como '{status}'. "
                          "Confira no marketplace antes de repetir.")
+
+
+def recuperar_interrompidas(minutos: int = EXECUCAO_MAXIMA_MIN) -> list[int]:
+    """Marca como 'incerta' o que ficou em 'aprovada' por mais de `minutos`:
+    a ação pode ter saído ou não. Roda no começo de cada ciclo do worker.
+
+    Uma resposta ao cliente incerta volta para a fila sozinha se o Mercado
+    Livre ainda mostrar a pergunta sem resposta (atendimento/bot.py); uma
+    compra incerta bloqueia reanalisar o pedido; o resto espera
+    resolver_incerta()."""
+    corte = (datetime.now(timezone.utc) - timedelta(minutes=minutos)).isoformat(timespec="seconds")
+    with conectar() as conn:
+        candidatos = conn.execute(
+            "SELECT id, tipo FROM aprovacoes WHERE status = 'aprovada' AND decidido_em < ?",
+            (corte,)).fetchall()
+    marcados = []
+    for linha in candidatos:
+        if _mudar(linha["id"], "aprovada", "incerta",
+                  "Execução interrompida: confira no marketplace (ou em ordens_de_compra/) "
+                  "antes de repetir."):
+            marcados.append(linha["id"])
+            registrar_evento("atencao", "aprovacao",
+                             f"Ação {linha['id']} ({linha['tipo']}) foi interrompida durante a "
+                             "execução. Confira no marketplace e resolva com: python cli.py "
+                             f"resolver {linha['id']} executada|erro")
+    return marcados
+
+
+def incertas() -> list[Aprovacao]:
+    with conectar() as conn:
+        linhas = conn.execute("SELECT * FROM aprovacoes WHERE status = 'incerta'"
+                              " ORDER BY decidido_em").fetchall()
+    return [_da_linha(l) for l in linhas]
+
+
+def resolver_incerta(aprovacao_id: int, saiu: bool, ator: str) -> None:
+    """Fecha uma 'incerta' depois de conferir no marketplace: saiu=True vira
+    'executada'; saiu=False vira 'erro' (uma resposta ao cliente volta para a
+    fila no próximo ciclo, se a pergunta continuar sem resposta)."""
+    status = "executada" if saiu else "erro"
+    if not _mudar(aprovacao_id, "incerta", status, f"Resolvida à mão por {ator}: "
+                  + ("a ação saiu." if saiu else "a ação não saiu.")):
+        raise JaDecidida(f"Aprovação {aprovacao_id} não está incerta")
+    registrar_evento("atencao", "aprovacao",
+                     f"Ação {aprovacao_id} incerta resolvida como '{status}' por {ator}")
 
 
 def recusar(aprovacao_id: int, motivo: str = ""):

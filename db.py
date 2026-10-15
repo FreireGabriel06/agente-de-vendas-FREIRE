@@ -106,7 +106,7 @@ CREATE TABLE IF NOT EXISTS aprovacoes (
     resumo        TEXT NOT NULL,
     payload_json  TEXT NOT NULL,
     valor         REAL,
-    status        TEXT DEFAULT 'pendente', -- pendente | aprovada | recusada | executada | erro
+    status        TEXT DEFAULT 'pendente', -- pendente | aprovada | recusada | executada | erro | incerta
     resultado     TEXT,
     criado_em     TEXT NOT NULL,
     decidido_em   TEXT

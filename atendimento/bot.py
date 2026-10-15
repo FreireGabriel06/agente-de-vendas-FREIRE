@@ -134,6 +134,11 @@ def _reabrir_resposta(question_id: str, a) -> None:
         nivel, motivo = "info", "a aprovação anterior foi em modo simulação e nada foi publicado"
     elif a["status"] == "erro":
         nivel, motivo = "atencao", "a publicação anterior falhou e nada foi publicado"
+    elif a["status"] == "incerta":
+        # Só chega aqui a pergunta que o Mercado Livre ainda devolve sem
+        # resposta: a publicação interrompida não saiu.
+        aprovacao.resolver_incerta(a["id"], saiu=False, ator="worker (pergunta ainda sem resposta)")
+        nivel, motivo = "atencao", "a publicação foi interrompida e a pergunta continua sem resposta"
     else:
         return
     novo = aprovacao.enfileirar("resposta_cliente", a["resumo"], json.loads(a["payload_json"]),
