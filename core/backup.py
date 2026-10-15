@@ -33,7 +33,7 @@ from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
 from config import DATA_DIR, config
 from core import cofre, privacidade
-from db import agora, registrar_evento
+from db import agora, conectar, registrar_evento
 
 CABECALHO = b"AGVBKP1\n"
 SCRYPT_N = 2 ** 17
@@ -125,6 +125,12 @@ def criar(destino: Path, senha: str) -> Path:
     faltando = [n for n in (".chave_lgpd", ".chave_cofre") if n not in partes]
     registrar_evento("info", "backup", f"Backup cifrado criado: {nome}"
                      + (f" (sem {', '.join(faltando)}: ainda não existiam)" if faltando else ""))
+    # Para a checagem de saúde (core/saude.py): quando foi o último backup.
+    # Só a data; o caminho pode dizer onde as cópias ficam.
+    with conectar() as conn:
+        conn.execute("INSERT INTO estado_sistema (chave, valor, atualizado_em) VALUES"
+                     " ('backup_ultimo', NULL, ?) ON CONFLICT(chave) DO UPDATE SET"
+                     " atualizado_em = excluded.atualizado_em", (agora(),))
     return arquivo
 
 
