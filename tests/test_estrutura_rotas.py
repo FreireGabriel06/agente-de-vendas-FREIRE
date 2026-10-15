@@ -78,3 +78,16 @@ def test_toda_rota_exige_sessao_ou_e_livre(cliente, metodo, caminho):
     else:
         assert r.status_code in (401, 303), (metodo, caminho, r.status_code)
     assert r.headers["x-frame-options"] == "DENY"
+
+
+def test_ciclo_pelo_painel_grava_o_operador_como_ator(sessao):
+    from apoio import USUARIO, cabecalho
+    from db import conectar
+    cliente, csrf = sessao
+    with conectar() as conn:
+        antes = conn.execute("SELECT COALESCE(MAX(id), 0) FROM eventos").fetchone()[0]
+    cliente.post("/api/ciclo", headers=cabecalho(csrf))
+    with conectar() as conn:
+        atores = {l[0] for l in conn.execute("SELECT ator FROM eventos WHERE id > ? AND origem = 'worker'",
+                                             (antes,))}
+    assert atores == {USUARIO}
