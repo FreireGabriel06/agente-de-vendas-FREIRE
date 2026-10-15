@@ -24,8 +24,10 @@ DESTINOS = {
                      "cadastro.py", "dinheiro.py", "sincronizacao.py", "alertas.py", "backup.py", "erros.py", "saude.py"],
     "conectores":   ["mercadolivre.py", "shopee.py", "amazon.py"],
     "inteligencia": ["precificacao.py", "tendencias.py"],
-    "atendimento":  ["persona.py", "bot.py"],
-    "painel":       ["app.py", "configurar.py", "painel.html"],
+    "atendimento":  ["persona.py", "bot.py", "claude_api.py"],
+    "painel":       ["app.py", "configurar.py", "protecao.py", "rotas_operacao.py",
+                     "rotas_cadastro.py", "rotas_conexoes.py", "rotas_amazon.py",
+                     "rotas_sessao.py", "painel.html"],
 }
 
 # Esses ficam na raiz do projeto.
