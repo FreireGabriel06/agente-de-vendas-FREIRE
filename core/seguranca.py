@@ -41,6 +41,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
+import config
 from db import agora, conectar, registrar_evento
 
 SCHEMA_SEGURANCA = """
@@ -79,8 +80,9 @@ SCRYPT_P = 1
 SCRYPT_MAXMEM = 300 * 1024 * 1024   # 128 * N * r cabe aqui com folga
 
 SENHA_MINIMA = 12
-OCIOSIDADE_MIN = int(os.getenv("SESSAO_OCIOSA_MIN", "30"))
-DURACAO_MAX_H = int(os.getenv("SESSAO_MAX_HORAS", "8"))
+# Valor inválido no .env avisa e usa o padrão, em vez de derrubar o painel.
+OCIOSIDADE_MIN = config._inteiro("SESSAO_OCIOSA_MIN", 30, 1, 24 * 60)
+DURACAO_MAX_H = config._inteiro("SESSAO_MAX_HORAS", 8, 1, 7 * 24)
 TENTATIVAS_ATE_BLOQUEIO = 10   # erros seguidos na conta, de qualquer endereço (DPP: até 10)
 BLOQUEIO_MIN = 15
 FALHAS_POR_IP = 5              # erros de um endereço dentro da janela abaixo

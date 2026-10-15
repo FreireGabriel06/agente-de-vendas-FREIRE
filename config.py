@@ -265,7 +265,7 @@ class ConfigNegocio:
 
     # Quantos dias de prazo o fornecedor leva. Entra no cálculo de risco
     # de estourar o prazo do marketplace.
-    prazo_fornecedor_dias: int = int(os.getenv("PRAZO_FORNECEDOR_DIAS", "5"))
+    prazo_fornecedor_dias: int = _inteiro("PRAZO_FORNECEDOR_DIAS", 5, 0, 365)
 
     # EMITE_NOTA_FISCAL: você emite nota fiscal em toda venda? true ou false.
     # Sem resposta (None), a conformidade bloqueia as compras pedindo a

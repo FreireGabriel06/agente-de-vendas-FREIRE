@@ -30,6 +30,7 @@ import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
+import config
 from config import DATA_DIR
 from core import dinheiro
 from db import conectar, agora, registrar_evento
@@ -45,7 +46,8 @@ class ErroChaveLGPD(RuntimeError):
 
 # Prazo de guarda do dado pessoal, em dias. 5 anos cobre prescrição do CDC
 # (art. 27) e o prazo fiscal. Depois disso o PII vira lixo de risco.
-RETENCAO_DIAS = int(os.getenv("RETENCAO_PII_DIAS", "1825"))
+# Valor inválido no .env avisa e usa o padrão, em vez de derrubar a importação.
+RETENCAO_DIAS = config._inteiro("RETENCAO_PII_DIAS", 1825, 1, 36500)
 
 SCHEMA_LGPD = """
 -- Log de acesso a dado pessoal. Accountability (art. 6º, X): você precisa
