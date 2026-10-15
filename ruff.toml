@@ -1,0 +1,13 @@
+# Análise estática do CI (job "lint"). Só regras que acham defeito, não estilo:
+# pyflakes (nome indefinido, import sem uso), erros de sintaxe, bugbear e os
+# erros do pylint.
+target-version = "py312"
+extend-exclude = [".venv"]
+
+[lint]
+select = ["F", "E9", "B", "PLE"]
+
+[lint.per-file-ignores]
+# Nos testes, ler uma propriedade só para disparar o efeito é o próprio teste;
+# test_lote6 usa caracteres de controle de propósito (entrada inválida).
+"tests/*" = ["B018", "PLE2502"]

@@ -399,6 +399,8 @@ when it arrived has no product linked, and re-analysis does not link one.
 ```bash
 pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
 python -m pytest -q
+python -m coverage run -m pytest -q && python -m coverage report   # CI fails below the floor in .coveragerc
+python -m ruff check .                                              # defect-finding rules only (ruff.toml)
 ```
 
 The suite runs in-process with FastAPI's `TestClient`; no server is started.

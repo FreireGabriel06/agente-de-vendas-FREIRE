@@ -11,7 +11,6 @@ from urllib.parse import urlparse
 
 import pytest
 
-from apoio import cabecalho
 from config import config
 from core import alertas, cofre, sincronizacao
 from db import conectar

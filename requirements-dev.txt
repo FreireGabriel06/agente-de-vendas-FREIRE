@@ -1,2 +1,4 @@
 pytest>=8.0.0
 httpx>=0.27.0
+coverage>=7.16
+ruff>=0.17

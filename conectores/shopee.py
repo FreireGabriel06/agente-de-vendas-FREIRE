@@ -209,7 +209,7 @@ class Shopee:
     # ------------------------------------------------------------ Chamadas
 
     def _req(self, metodo: str, caminho: str, params: dict | None = None, corpo: dict | None = None):
-        self.token  # garante renovação
+        self.token  # noqa: B018 — a propriedade garante a renovação
         ts = int(time.time())
         base_params = {
             "partner_id": self.partner_id,

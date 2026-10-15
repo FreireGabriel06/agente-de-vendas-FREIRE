@@ -24,13 +24,11 @@ de consentimento pra processar o endereço de quem comprou de você — precisa
 dele pra entregar. O que você NÃO pode é usar esse mesmo dado pra mandar
 marketing depois; isso exige base legal própria.
 """
-import base64
 import hashlib
 import json
 import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 from config import DATA_DIR
 from core import dinheiro

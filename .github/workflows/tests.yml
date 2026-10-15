@@ -28,8 +28,29 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
 
-      - name: Run tests
-        run: pytest -q
+      - name: Run tests with coverage
+        run: |
+          coverage run -m pytest -q
+          coverage report
+
+  # Análise estática: só regras que acham defeito (ruff.toml).
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Install ruff
+        run: pip install -c constraints.txt ruff
+
+      - name: Lint
+        run: ruff check --output-format github .
 
   # Vulnerabilidades conhecidas nas versões travadas (achados S-26 e S-12).
   dependencias:

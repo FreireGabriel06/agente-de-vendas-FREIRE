@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from apoio import SENHA, USUARIO, cabecalho
+from apoio import USUARIO, cabecalho
 from config import config
 from core import seguranca
 from db import conectar
