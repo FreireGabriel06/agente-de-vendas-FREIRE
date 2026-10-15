@@ -131,7 +131,7 @@ def _numero(casas: int, *, maior_que_zero: bool, maximo: Decimal | None = None):
         try:
             numero = dinheiro.validar_valor(valor, casas=casas)
         except dinheiro.ValorInvalido as e:
-            raise _recusa(str(e))
+            raise _recusa(str(e)) from None
         if maior_que_zero and numero <= 0:
             raise _recusa("precisa ser maior que zero.")
         if not maior_que_zero and numero < 0:
@@ -146,7 +146,7 @@ def _moeda(valor):
     try:
         return dinheiro.validar_moeda(valor)
     except dinheiro.ValorInvalido as e:
-        raise _recusa(str(e))
+        raise _recusa(str(e)) from None
 
 
 def _sim_nao(valor):
@@ -374,7 +374,7 @@ def _inserir(conn, tabela: str, colunas: dict) -> int:
 
 def _atualizar(conn, tabela: str, registro_id: int, colunas: dict):
     marcadores, parametros = _marcadores(colunas)
-    atribuicoes = ", ".join(f"{c} = {m}" for c, m in zip(colunas, marcadores))
+    atribuicoes = ", ".join(f"{c} = {m}" for c, m in zip(colunas, marcadores, strict=True))
     conn.execute(f"UPDATE {tabela} SET {atribuicoes} WHERE id = ?", [*parametros, registro_id])
 
 

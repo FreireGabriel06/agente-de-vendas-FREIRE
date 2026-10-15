@@ -27,7 +27,6 @@ import hashlib
 import os
 import re
 import secrets
-from pathlib import Path
 from urllib.parse import urlencode, urlparse, parse_qs
 
 import requests
@@ -491,7 +490,7 @@ def testar(marketplace: str) -> dict:
         if marketplace == "amazon":
             from conectores.amazon import Amazon
             a = Amazon()
-            a.token
+            a.token  # noqa: B018 — a propriedade renova o token
             return {"ok": True, "detalhe": "Token LWA obtido com sucesso."}
 
         if marketplace == "claude":

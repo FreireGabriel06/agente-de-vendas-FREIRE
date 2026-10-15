@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 from cryptography.fernet import Fernet
 
-from config import config
 from core import backup, cofre, privacidade
 from db import agora, conectar
 

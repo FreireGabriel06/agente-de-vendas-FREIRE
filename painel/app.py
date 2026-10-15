@@ -23,20 +23,18 @@ import html
 import json
 import os
 import secrets
-import threading
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from fastapi import FastAPI, Query, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
 from config import config
 from db import conectar, definir_ator, inicializar, registrar_evento
 from core import aprovacao, cadastro, cofre, conformidade, privacidade, seguranca
 from core.erros import mensagem_segura
-from core.estados import Estado, ESTADOS_CRITICOS, historico
+from core.estados import ESTADOS_CRITICOS, historico
 from inteligencia import precificacao, tendencias
 
 BASE = Path(__file__).resolve().parent
@@ -258,13 +256,13 @@ def api_aprovar(aprovacao_id: int, request: Request):
     try:
         resultado = aprovacao.aprovar(aprovacao_id, EXECUTORES)
     except aprovacao.BloqueadoPelaConformidade as e:
-        raise HTTPException(409, str(e))
+        raise HTTPException(409, str(e)) from None
     except aprovacao.JaDecidida:
-        raise HTTPException(409, "Esta pendência já foi decidida por outra chamada.")
+        raise HTTPException(409, "Esta pendência já foi decidida por outra chamada.") from None
     except Exception as e:
         # Sem corpo de resposta do marketplace nem mensagem de exceção
         # inesperada na tela (achado S-06); o evento guarda a pilha.
-        raise HTTPException(500, mensagem_segura(e))
+        raise HTTPException(500, mensagem_segura(e)) from None
     registrar_evento("info", "aprovacao",
                      f"Ação {aprovacao_id} liberada por {request.state.operador}")
     return {"ok": True, "resultado": resultado, "simulado": aprovacao.foi_simulado(resultado)}
@@ -279,7 +277,7 @@ async def api_recusar(aprovacao_id: int, request: Request):
     try:
         aprovacao.recusar(aprovacao_id, f"{motivo} (por {request.state.operador})")
     except aprovacao.JaDecidida:
-        raise HTTPException(409, "Esta pendência já foi decidida por outra chamada.")
+        raise HTTPException(409, "Esta pendência já foi decidida por outra chamada.") from None
     return {"ok": True}
 
 
@@ -306,7 +304,7 @@ def _numero(corpo: dict, nome: str, padrao, minimo: str, maximo: str) -> Decimal
             raise InvalidOperation
         numero = Decimal(str(valor).strip().replace(",", "."))
     except InvalidOperation:
-        raise HTTPException(422, f"{nome}: informe um número.")
+        raise HTTPException(422, f"{nome}: informe um número.") from None
     if not numero.is_finite() or not Decimal(minimo) <= numero <= Decimal(maximo):
         raise HTTPException(422, f"{nome}: use um número de {minimo} a {maximo}.")
     return numero
@@ -328,7 +326,7 @@ async def api_preco(request: Request):
             tipo_anuncio=tipo,
         )
     except ValueError as e:
-        raise HTTPException(422, str(e))
+        raise HTTPException(422, str(e)) from None
     return r.como_dict()
 
 
@@ -416,7 +414,7 @@ async def _corpo_do_cadastro(request: Request):
     # de um expoente que nem o Decimal representa (1e9999999999999999999).
     except (ValueError, RecursionError, ArithmeticError):
         raise cadastro.ErroValidacao([{"campo": "corpo",
-                                       "mensagem": "JSON inválido; envie um objeto JSON."}])
+                                       "mensagem": "JSON inválido; envie um objeto JSON."}]) from None
 
 
 async def _gravar(funcao, *args, request: Request):
@@ -529,9 +527,9 @@ def api_url_autorizacao(provedor: str, request: Request):
             return {"url": configurar.amazon_url_autorizacao(request.state.sid)}
         raise HTTPException(400, "Provedor desconhecido.")
     except ValueError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from None
     except cofre.ErroCofre as e:
-        raise HTTPException(503, str(e))
+        raise HTTPException(503, str(e)) from None
 
 
 @app.post("/api/configuracao/concluir-ml")
@@ -687,7 +685,7 @@ async def api_salvar_config(request: Request):
     try:
         destino = configurar.gravar_env(chaves)
     except cofre.ErroCofre as e:
-        raise HTTPException(503, str(e))
+        raise HTTPException(503, str(e)) from None
     registrar_evento("info", "configuracao", f"Chaves atualizadas: {', '.join(sorted(chaves))}")
     avisos = []
     if destino["sobrepostos"]:

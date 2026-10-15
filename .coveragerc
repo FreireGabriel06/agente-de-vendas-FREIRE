@@ -1,0 +1,15 @@
+# Cobertura medida no CI (job "pytest"). O piso impede que código novo entre
+# sem teste; suba o número quando a cobertura subir.
+[run]
+branch = True
+source = .
+omit =
+    tests/*
+    organizar.py
+    demo.py
+    .venv/*
+
+[report]
+fail_under = 88
+skip_covered = True
+show_missing = False
