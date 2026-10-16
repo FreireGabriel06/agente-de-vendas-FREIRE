@@ -291,6 +291,10 @@ class ConfigClaude:
     """
     modelo: str = os.getenv("MODELO_CLAUDE", "").strip() or "claude-opus-5-5"
     esforco: str = _esforco_claude()
+    # Teto diário (UTC) de gasto estimado e de chamadas; passou, as perguntas
+    # esperam o dia seguinte (atendimento/claude_api.py). 0 bloqueia a API.
+    teto_diario_usd: float = _numero("CLAUDE_TETO_DIARIO_USD", "5")
+    chamadas_por_dia: int = _inteiro("CLAUDE_CHAMADAS_POR_DIA", 300, 0, 1_000_000)
 
 
 @dataclass

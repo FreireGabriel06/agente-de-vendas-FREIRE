@@ -28,14 +28,22 @@ Regras desta integração, do guia de migração para o Claude Opus 5.5:
     ANTHROPIC_BASE_URL no ambiente não desvia a chave para outro endereço.
     Nem a chave nem o conteúdo do prompt (que traz a pergunta do comprador)
     vão para registro ou mensagem de erro.
+  - Teto diário de gasto (lote E7; achado S-22 da auditoria): cada resposta
+    soma os tokens de usage em uso_claude, com o custo estimado pela tabela
+    de preço; antes de chamar, CLAUDE_TETO_DIARIO_USD e
+    CLAUDE_CHAMADAS_POR_DIA são conferidos. Passou, a chamada não sai: a
+    pergunta fica para o dia seguinte (erro temporário) e um evento avisa uma
+    vez por dia.
 """
 import re
+from datetime import datetime, timezone
+from decimal import Decimal
 
 import anthropic
 
 from config import config
 from core import cofre
-from db import registrar_evento
+from db import agora, conectar, registrar_evento
 
 BETA_FALLBACK = "server-side-fallback-2026-07-01"
 
@@ -56,6 +64,19 @@ LIMITES_POR_ESFORCO = {
 }
 TEMPO_TESTE = 20.0
 TENTATIVAS_SDK = 2
+
+# Dólares por milhão de tokens (entrada, saída), da tabela da Anthropic
+# consultada em 16/10/2026. A estimativa erra para cima: leitura de cache conta
+# como entrada cheia, gravação de cache como 1,25 x, e modelo fora da tabela
+# paga o preço do mais caro. O raciocínio vem dentro de output_tokens.
+PRECO_POR_MILHAO = {
+    "claude-fable-5-1": (Decimal("10"), Decimal("50")),
+    "claude-opus-5-5": (Decimal("4"), Decimal("20")),
+    "claude-opus-5": (Decimal("5"), Decimal("25")),
+    "claude-sonnet-5-5": (Decimal("2"), Decimal("10")),
+    "claude-haiku-5-5": (Decimal("0.10"), Decimal("0.50")),
+}
+PRECO_DESCONHECIDO = max(PRECO_POR_MILHAO.values())
 
 
 class ErroClaude(Exception):
@@ -126,6 +147,84 @@ def _chamar(funcao, tempo: float):
         raise ErroClaude("sem conexão com a API da Anthropic", temporaria=True) from None
 
 
+def _hoje() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _inteiro_do_uso(uso, campo: str) -> int:
+    valor = getattr(uso, campo, None) if uso is not None else None
+    return valor if isinstance(valor, int) and valor >= 0 else 0
+
+
+def custo_estimado(modelos, entrada: int, cache_gravado: int, saida: int) -> Decimal:
+    """Custo em dólar pelo preço do mais caro entre os modelos que podem ter
+    respondido (o configurado e o de reserva)."""
+    p_entrada, p_saida = max(PRECO_POR_MILHAO.get(m, PRECO_DESCONHECIDO) for m in modelos)
+    return (entrada * p_entrada + cache_gravado * p_entrada * Decimal("1.25")
+            + saida * p_saida) / Decimal(1_000_000)
+
+
+def uso_de_hoje() -> dict:
+    with conectar() as conn:
+        linha = conn.execute("SELECT * FROM uso_claude WHERE dia = ?", (_hoje(),)).fetchone()
+    if linha is None:
+        return {"dia": _hoje(), "chamadas": 0, "tokens_entrada": 0, "tokens_saida": 0,
+                "custo_estimado": Decimal("0")}
+    return {**dict(linha), "custo_estimado": Decimal(linha["custo_estimado_dec"])}
+
+
+def _registrar_uso(resposta, reserva: str | None) -> None:
+    """Soma a resposta no uso do dia: toda resposta que chegou é cobrada,
+    também a recusa e a cortada pelo limite."""
+    uso = getattr(resposta, "usage", None)
+    entrada = (_inteiro_do_uso(uso, "input_tokens")
+               + _inteiro_do_uso(uso, "cache_read_input_tokens"))
+    gravado = _inteiro_do_uso(uso, "cache_creation_input_tokens")
+    saida = _inteiro_do_uso(uso, "output_tokens")
+    custo = custo_estimado([config.claude.modelo] + ([reserva] if reserva else []),
+                           entrada, gravado, saida)
+    with conectar() as conn:
+        conn.execute("BEGIN IMMEDIATE")  # um somatório por vez, entre processos também
+        linha = conn.execute("SELECT custo_estimado_dec FROM uso_claude WHERE dia = ?",
+                             (_hoje(),)).fetchone()
+        total = (Decimal(linha[0]) if linha else Decimal("0")) + custo
+        conn.execute(
+            "INSERT INTO uso_claude (dia, chamadas, tokens_entrada, tokens_saida, custo_estimado_dec)"
+            " VALUES (?, 1, ?, ?, ?) ON CONFLICT(dia) DO UPDATE SET chamadas = chamadas + 1,"
+            " tokens_entrada = tokens_entrada + excluded.tokens_entrada,"
+            " tokens_saida = tokens_saida + excluded.tokens_saida,"
+            " custo_estimado_dec = ?",
+            (_hoje(), entrada + gravado, saida, str(total), str(total)))
+
+
+def conferir_teto() -> None:
+    """Levanta ErroClaude temporário quando o dia já passou do teto de gasto
+    estimado ou de chamadas. O aviso vai para os eventos uma vez por dia."""
+    uso = uso_de_hoje()
+    teto = Decimal(str(config.claude.teto_diario_usd))
+    limite = config.claude.chamadas_por_dia
+    if uso["chamadas"] < limite and uso["custo_estimado"] < teto:
+        return
+    motivo = (f"teto diário da Claude API atingido ({uso['chamadas']} chamada(s), "
+              f"US$ {uso['custo_estimado']:.2f} estimados; tetos {limite} e US$ {teto:.2f})")
+    with conectar() as conn:
+        avisado = conn.execute("SELECT valor FROM estado_sistema WHERE chave = 'claude_teto_avisado'"
+                               ).fetchone()
+        if avisado is None or avisado[0] != uso["dia"]:
+            conn.execute("INSERT INTO estado_sistema (chave, valor, atualizado_em) VALUES"
+                         " ('claude_teto_avisado', ?, ?) ON CONFLICT(chave) DO UPDATE SET"
+                         " valor = excluded.valor, atualizado_em = excluded.atualizado_em",
+                         (uso["dia"], agora()))
+            novo_aviso = True
+        else:
+            novo_aviso = False
+    if novo_aviso:
+        registrar_evento("atencao", "atendimento",
+                         f"{motivo[:1].upper()}{motivo[1:]}. As perguntas esperam o dia seguinte; "
+                         "o teto fica em CLAUDE_TETO_DIARIO_USD e CLAUDE_CHAMADAS_POR_DIA.")
+    raise ErroClaude(motivo, temporaria=True)
+
+
 def _modelo_de_reserva(resposta) -> str | None:
     """O modelo de reserva que serviu a resposta, ou None. O sinal é uma
     entrada fallback_message em usage.iterations."""
@@ -146,6 +245,7 @@ def redigir_texto(sistema: str, conteudo: str, *, chave: str, max_tokens: int | 
     Levanta ErroClaude quando não há texto que possa ir para a fila: erro da
     API, recusa, resposta cortada pelo limite, resposta vazia.
     """
+    conferir_teto()  # antes de gastar: passou do teto, a chamada não sai
     max_padrao, tempo = limites()
     cliente = criar_cliente(chave, tempo)
     resposta = _chamar(lambda: cliente.beta.messages.create(
@@ -161,6 +261,7 @@ def redigir_texto(sistema: str, conteudo: str, *, chave: str, max_tokens: int | 
     # stop_reason antes de qualquer leitura do conteúdo.
     motivo = getattr(resposta, "stop_reason", None)
     reserva = _modelo_de_reserva(resposta)
+    _registrar_uso(resposta, reserva)
     if motivo == "refusal":
         # stop_details é só informação (a categoria pode vir None).
         categoria = getattr(getattr(resposta, "stop_details", None), "category", None)
