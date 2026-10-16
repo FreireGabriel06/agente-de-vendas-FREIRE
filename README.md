@@ -414,7 +414,10 @@ Before any project module is imported, `tests/conftest.py` points
 `WORKER_ATIVO=false`, so the project's own `.env`, database, keys and tokens
 are never opened. Each test gets its own database and data files. Proxy
 settings are switched off (`NO_PROXY=*`), and any connection or name lookup
-outside loopback fails the test.
+outside loopback fails the test. A Python audit hook (`tests/guarda/`) also
+blocks UDP, reverse DNS and lookups for the whole process, from collection
+on, and every Python subprocess a test starts loads the same guard and
+refuses to run with `AGENTE_DADOS` empty or inside the repository.
 
 What it covers:
 
