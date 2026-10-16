@@ -144,7 +144,10 @@ async def api_recusar(aprovacao_id: int, request: Request):
 @rotas.post("/api/nichos")
 async def api_nichos(request: Request):
     corpo = await request.json()
-    termos = [t.strip() for t in corpo.get("termos", []) if t.strip()]
+    try:
+        termos = tendencias.validar_termos(corpo.get("termos", []) if isinstance(corpo, dict) else None)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from None
     if not termos:
         raise HTTPException(400, "Informe pelo menos um termo")
     ops = await run_in_threadpool(tendencias.analisar, termos)

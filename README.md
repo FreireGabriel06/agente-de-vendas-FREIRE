@@ -102,7 +102,7 @@ What the automated suite covers, and how to run it, is under [Tests](#tests).
 | Mercado Livre: OAuth with PKCE, orders, questions, shipments, price update | `conectores/mercadolivre.py` | Not validated |
 | Buyer replies drafted with the Claude API through the official `anthropic` SDK, with a fixed FAQ and escalation triggers; each question is sent to the model once; refusals, truncated drafts and API errors escalate to a person; the connection test uses `models.retrieve` (no tokens) — see [Claude API](#claude-api) | `atendimento/`, `painel/configurar.py` | Tested with a fake client and with the real SDK over a mock transport; not validated against the live API; needs `ANTHROPIC_API_KEY` |
 | Shipment tracking for confirmed and in-transit orders, reading the encrypted shipping reference through `core/privacidade.py` (first read per order logged) | `worker.py`, `core/privacidade.py` | Tested with a fake Mercado Livre client |
-| Niche research: Google Trends and Mercado Livre search | `inteligencia/tendencias.py` | Not validated |
+| Niche research: Google Trends and Mercado Livre search; at most 25 distinct terms of up to 80 characters per run (HTTP 422 otherwise); failures logged as warnings with the error type only | `inteligencia/tendencias.py` | Tested with fake Trends and Mercado Livre; not validated against the live services |
 | Shopee: partner authorization with HMAC-signed calls, order listing | `conectores/shopee.py` | Not validated; used only by connection setup and test, not by the worker |
 | Amazon SP-API, read-only: website authorization (consent with a session-bound `state`, log-in URI that returns the seller only to an Amazon domain, code exchanged within its 5 minutes, refresh token in the vault, `Referrer-Policy: no-referrer`) and incremental order sync (`getOrders` with `NextToken`, every item with `getOrderItems`, Decimal amounts with the Amazon currency, back-off on 429/5xx with `Retry-After` and the `x-amzn-RateLimit-Limit` rate, a cursor that moves only after a complete pass, no duplicates on re-runs). No buyer data is stored. Amazon orders never enter the supplier purchase flow | `conectores/amazon.py`, `core/sincronizacao.py`, `painel/`, `worker.py` | Tested against a fake SP-API; not validated with a live account |
 | Amazon listings and FBA stock, read-only: `searchListingsItems` (status, price as Decimal, your own stock) and `getInventorySummaries` (FBA fulfillable stock), both paginated; an account without FBA access is recorded as unavailable, not as a failure | `conectores/amazon.py`, `core/sincronizacao.py` | Tested against a fake SP-API; not validated with a live account |
@@ -403,7 +403,7 @@ when it arrived has no product linked, and re-analysis does not link one.
 ```bash
 pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
 python -m pytest -q
-python -m coverage run -m pytest -q && python -m coverage report   # CI fails below the floor in .coveragerc
+python -m coverage run -m pytest -q && python -m coverage report   # CI fails below the floor in .coveragerc (90%)
 python -m ruff check .                                              # defect-finding rules only (ruff.toml)
 ```
 
