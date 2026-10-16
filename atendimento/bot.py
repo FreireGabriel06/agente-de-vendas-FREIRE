@@ -28,6 +28,7 @@ fixo). Comece com tudo na fila. Bot solto em anúncio novo é a forma mais
 rápida de perder reputação antes de ter feito a primeira venda.
 """
 import json
+import re
 from typing import NamedTuple
 
 from atendimento import claude_api
@@ -57,6 +58,30 @@ class Rascunho(NamedTuple):
     do_modelo: bool = True  # False: motivo fixo do programa, que pode ir para o registro
 
 
+def _marcado(texto) -> str:
+    """Texto de terceiros entre marcações (lote E7; achado S-23): os sinais de
+    menor e maior viram aspas angulares, para a pergunta não fechar a
+    marcação e escrever como se fosse o sistema."""
+    return str(texto).replace("<", "‹").replace(">", "›")
+
+
+# Contato fora do marketplace num rascunho: o Mercado Livre proíbe, e é o que
+# uma instrução escondida na pergunta costuma pedir. O rascunho vai para uma
+# pessoa em vez da fila.
+_CONTATO = re.compile(
+    r"https?://|www\.|[\w.+-]+@[\w-]+\.[\w.]+"
+    # Telefone brasileiro (DDD e 8 ou 9 dígitos), não parte de uma sequência
+    # maior: um EAN de 13 dígitos ou um CPF com pontos não caem aqui.
+    r"|(?<!\d)(?:\+?55[\s-]?)?\(?\d{2}\)?[\s-]?9?\d{4}[\s-]?\d{4}(?!\d)",
+    re.IGNORECASE)
+
+
+def problema_no_rascunho(texto: str) -> str | None:
+    if _CONTATO.search(texto):
+        return "o rascunho trazia link, e-mail ou telefone"
+    return None
+
+
 def _responder_faq(pergunta: str) -> str | None:
     baixo = pergunta.lower()
     for chaves, resposta in FAQ.items():
@@ -77,16 +102,20 @@ def _rascunho(pergunta: str, contexto_produto: dict, persona=None,
         return Rascunho("ESCALAR: ANTHROPIC_API_KEY não configurada",
                         temporaria=True, do_modelo=False)
 
-    ficha = "\n".join(f"{k}: {v}" for k, v in contexto_produto.items())
+    ficha = "\n".join(f"{_marcado(k)}: {_marcado(v)}" for k, v in contexto_produto.items())
     try:
         texto = claude_api.redigir_texto(
             persona.system_prompt(),
-            f"FICHA DO PRODUTO:\n{ficha}\n\nPERGUNTA DO COMPRADOR:\n{pergunta}",
+            f"<ficha_do_produto>\n{ficha}\n</ficha_do_produto>\n\n"
+            f"<pergunta_do_comprador>\n{_marcado(pergunta)}\n</pergunta_do_comprador>",
             chave=chave,
             referencia=referencia,
         )
     except claude_api.ErroClaude as e:
         return Rascunho(f"ESCALAR: {e}", temporaria=e.temporaria, do_modelo=False)
+    problema = None if texto.startswith("ESCALAR:") else problema_no_rascunho(texto)
+    if problema:
+        return Rascunho(f"ESCALAR: {problema}", do_modelo=False)
     return Rascunho(texto)
 
 

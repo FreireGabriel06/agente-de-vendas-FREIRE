@@ -212,6 +212,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_alerta_aberto ON alertas(tipo, chave) WHER
 -- Uma linha por fonte de dados: cursor, última tentativa, último sucesso e
 -- o resultado. Último sucesso e última tentativa são separados: uma falha não
 -- apaga a data do último dado válido.
+-- Uso da Claude API por dia, em UTC (lote E7): o teto diário de gasto lê
+-- daqui. custo_estimado_dec é texto decimal, em dólar.
+CREATE TABLE IF NOT EXISTS uso_claude (
+    dia                 TEXT PRIMARY KEY,
+    chamadas            INTEGER NOT NULL DEFAULT 0,
+    tokens_entrada      INTEGER NOT NULL DEFAULT 0,
+    tokens_saida        INTEGER NOT NULL DEFAULT 0,
+    custo_estimado_dec  TEXT NOT NULL DEFAULT '0'
+);
+
 -- Estado do sistema em chave e valor (lote de estrutura E3): o fim do
 -- último ciclo do worker, lido pela checagem de saúde (core/saude.py).
 CREATE TABLE IF NOT EXISTS estado_sistema (

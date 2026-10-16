@@ -90,6 +90,7 @@ What the automated suite covers, and how to run it, is under [Tests](#tests).
 | Approval queue: purchases, buyer replies, price changes, listings. An item is reserved atomically before it runs, so two simultaneous approvals execute it once (the second gets HTTP 409); refusing works only on a pending item | `core/aprovacao.py` | Tested for purchase orders, buyer replies and price changes (marketplace calls faked), including concurrent approvals |
 | Interrupted approvals: an item left in `aprovada` for more than 10 minutes (the process stopped while it ran) becomes `incerta` with a warning event, at the start of every cycle; nothing repeats it on its own. A buyer reply goes back to the queue only if Mercado Livre still lists the question unanswered; an uncertain purchase blocks reanalysis; `cli.py resolver` lists them and closes each as `executada` or `erro` after checking. Stopping the panel lets the running worker cycle finish (up to 30 s) | `core/aprovacao.py`, `worker.py`, `atendimento/bot.py`, `executar.py`, `cli.py` | Tested |
 | Health check: database (and SQLite integrity with `--completo`), vault key, LGPD key, worker delay (last cycle older than 3 intervals is a failure), uncertain approvals, open alerts, free disk space, backup age (`BACKUP_MAX_DIAS`, default 7 days) and (with `--completo`) the audit trail; `GET /saude` without login returns only `ok`, `atencao` or `falha` (HTTP 503 on failure) for an external monitor; `GET /api/saude` gives the details to admins; `cli.py saude` exits 0, 1 or 2. Checking writes nothing | `core/saude.py`, `worker.py`, `painel/app.py`, `cli.py` | Tested |
+| Claude API spend: a daily ceiling in estimated dollars and in calls (`CLAUDE_TETO_DIARIO_USD`, `CLAUDE_CHAMADAS_POR_DIA`) checked before every call, usage summed from each response; buyer question and product sheet sent as marked, neutralized third-party data; drafts with a link, e-mail or phone number escalated | `atendimento/claude_api.py`, `atendimento/bot.py`, `atendimento/persona.py` | Tested with a fake API and the real SDK on a mock transport |
 | Compliance rules that fail closed: the same check before a purchase order is queued, in the panel queue and at approval from the panel (HTTP 409) or `cli.py aprovar`, with the same reason; missing data blocks the item as "needs confirmation" with the way out | `core/conformidade.py`, `core/aprovacao.py`, `painel/app.py`, `cli.py` | Tested with synthetic Mercado Livre and Amazon orders |
 | Purchase order after approval | `worker.py` | Writes a text file to `ordens_de_compra/` in the data folder; nothing is sent to the supplier, in either mode |
 | Simulation mode (`MODO_SIMULACAO`, on by default): approved replies and price changes are recorded, not sent; the purchase order file and the result are marked as a test; a simulated approval does not consume the item — the order stays in `AGUARDANDO_APROVACAO`, and the purchase and the reply return to the queue once simulation is off; panel, CLI, `demo.py` and `executar.py` say when it is on | `config.py`, `worker.py`, `atendimento/bot.py`, `core/aprovacao.py`, `painel/` | Tested |
@@ -714,6 +715,19 @@ Reply drafts use the official `anthropic` Python SDK
   8000 / 120 s, `high`, `xhigh` and `max` 16000 / 300 s. Higher effort means
   more cost and longer waits. The system prompt keeps the answer to three
   sentences.
+- **Daily ceiling:** `CLAUDE_TETO_DIARIO_USD` (default `5`) and
+  `CLAUDE_CHAMADAS_POR_DIA` (default `300`), per UTC day. Every response adds
+  its `usage` tokens to the day, priced from the model table and rounded up
+  (cache reads count as full input, unknown models at the highest price;
+  refusals and cut-off replies count too). Once either ceiling is reached, no
+  call goes out: questions wait for the next day and one warning event says
+  so. `0` blocks the API.
+- **Third-party text:** the product sheet and the buyer's question are sent
+  inside `<ficha_do_produto>` and `<pergunta_do_comprador>`, with `<` and `>`
+  in them neutralized, and the system prompt says that text is data, never
+  instructions. A draft that contains a link, an e-mail or a phone number
+  goes to a person instead of the queue (Mercado Livre forbids outside
+  contact, and it is what a hidden instruction usually asks for).
 - **Refusal fallback:** always on (there is no setting to turn it off) — beta header
   `server-side-fallback-2026-07-01` with `fallbacks: "default"`, so a policy
   decline is retried server-side on the model Anthropic recommends. That
