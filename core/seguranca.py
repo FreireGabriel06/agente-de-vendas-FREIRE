@@ -718,6 +718,6 @@ def consumir_state_oauth(state: str | None, provedor: str, sid: str | None) -> d
     else:
         return registro["dados"]
     # A recusa vai para o registro sem o valor do state. ASVS 5.0, 16.3.2 e 16.2.5.
-    registrar_evento("aviso", "seguranca", f"Retorno de autorização recusado ({provedor}): state {motivo}")
+    registrar_evento("atencao", "seguranca", f"Retorno de autorização recusado ({provedor}): state {motivo}")
     raise StateInvalido("Esta autorização não saiu desta sessão, já foi usada ou venceu. "
                         "Clique em autorizar de novo.")

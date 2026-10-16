@@ -24,9 +24,35 @@ from dataclasses import dataclass
 from typing import Iterable
 
 import requests
+from requests import RequestException
 
 from db import conectar, agora, registrar_evento
 from config import config
+from core.erros import descrever, falha_de_rede
+
+# Uma análise roda numa thread do painel e espera o Google e o ML a cada
+# termo: lista e termo têm teto (lote E10).
+MAX_TERMOS = 25
+MAX_CARACTERES = 80
+
+
+def validar_termos(termos) -> list[str]:
+    """Termos limpos, sem repetição, ou ValueError com o motivo."""
+    if isinstance(termos, (str, bytes)) or not isinstance(termos, Iterable):
+        raise ValueError("Envie os termos numa lista.")
+    limpos = []
+    for t in termos:
+        if not isinstance(t, str):
+            raise ValueError("Cada termo precisa ser texto.")
+        t = " ".join(t.split()).lower()
+        if len(t) > MAX_CARACTERES:
+            raise ValueError(f"Termo longo demais: use até {MAX_CARACTERES} caracteres.")
+        if t:
+            limpos.append(t)
+    limpos = list(dict.fromkeys(limpos))
+    if len(limpos) > MAX_TERMOS:
+        raise ValueError(f"No máximo {MAX_TERMOS} termos por análise.")
+    return limpos
 
 
 @dataclass
@@ -57,7 +83,7 @@ def _serie_trends(termos: list[str], periodo: str = "today 3-m", geo: str = "BR"
     try:
         from pytrends.request import TrendReq
     except ImportError:
-        registrar_evento("aviso", "tendencias", "pytrends não instalado; pulando Google Trends")
+        registrar_evento("atencao", "tendencias", "pytrends não instalado; pulando Google Trends")
         return {}
 
     resultado = {}
@@ -75,7 +101,9 @@ def _serie_trends(termos: list[str], periodo: str = "today 3-m", geo: str = "BR"
                     resultado[termo] = df[termo].tolist()
             time.sleep(2)  # o Google bloqueia rajada; respeite o intervalo
         except Exception as e:
-            registrar_evento("aviso", "tendencias", f"Falha no Trends para {lote}: {e}")
+            # Só o tipo: a mensagem do pytrends traz a URL e o corpo da resposta.
+            registrar_evento("atencao", "tendencias",
+                             f"Falha no Google Trends para {len(lote)} termo(s) ({type(e).__name__})")
     return resultado
 
 
@@ -107,8 +135,8 @@ def _concorrencia_ml(termo: str, token: str | None = None) -> tuple[int, float]:
         r = requests.get(url, params={"q": termo, "limit": 50},
                          headers=headers, timeout=15)
         if r.status_code != 200:
-            registrar_evento("aviso", "tendencias",
-                             f"Busca ML '{termo}' retornou {r.status_code}")
+            registrar_evento("atencao", "tendencias",
+                             f"Busca do Mercado Livre: {descrever('GET', '/search', r.status_code)}")
             return 0, 0.0
         dados = r.json()
         total = dados.get("paging", {}).get("total", 0)
@@ -116,8 +144,9 @@ def _concorrencia_ml(termo: str, token: str | None = None) -> tuple[int, float]:
                   if isinstance(item.get("price"), (int, float))]
         mediana = statistics.median(precos) if precos else 0.0
         return total, round(mediana, 2)
-    except requests.RequestException as e:
-        registrar_evento("aviso", "tendencias", f"Erro de rede na busca ML '{termo}': {e}")
+    except (RequestException, ValueError) as e:
+        registrar_evento("atencao", "tendencias",
+                         "Busca do Mercado Livre: " + falha_de_rede("GET", "/search", e))
         return 0, 0.0
 
 
@@ -130,7 +159,7 @@ def termos_em_alta_ml(token: str | None = None, limite: int = 20) -> list[str]:
         if r.status_code != 200:
             return []
         return [t["keyword"] for t in r.json()[:limite] if "keyword" in t]
-    except (requests.RequestException, ValueError):
+    except (RequestException, ValueError):
         return []
 
 
@@ -151,8 +180,9 @@ def _score(demanda: float, tendencia_pct: float, concorrencia: int) -> float:
 
 def analisar(termos: Iterable[str], token_ml: str | None = None,
              nicho: str = "", persistir: bool = True) -> list[Oportunidade]:
-    """Roda o pipeline completo e devolve as oportunidades ordenadas por score."""
-    termos = list(dict.fromkeys(t.strip().lower() for t in termos if t.strip()))
+    """Roda o pipeline completo e devolve as oportunidades ordenadas por score.
+    Lista inválida, longa demais ou com termo longo: ValueError."""
+    termos = validar_termos(termos)
     if not termos:
         return []
 
