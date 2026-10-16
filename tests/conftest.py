@@ -19,10 +19,10 @@ Cada teste ainda ganha a própria pasta (tmp_path), com banco novo, e qualquer
 conexão de rede fora do loopback reprova o teste.
 """
 import dataclasses
-import ipaddress
 import os
 import shutil
 import socket
+import sys
 import tempfile
 from pathlib import Path
 
@@ -72,6 +72,18 @@ os.environ.update({
     "HOSTS_PAINEL": "testserver",
 })
 
+# Guarda do processo inteiro (achado S-82): gancho de auditoria contra rede,
+# já ativo na coleta; e a mesma guarda em todo Python filho, pelo
+# sitecustomize.py de tests/guarda, que também recusa AGENTE_DADOS vazio ou
+# dentro do repositório.
+GUARDA = Path(__file__).resolve().parent / "guarda"
+sys.path.insert(0, str(GUARDA))
+import guarda_rede  # noqa: E402
+
+guarda_rede.instalar()
+os.environ["PYTHONPATH"] = os.pathsep.join(
+    [str(GUARDA)] + [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p])
+
 
 # ------------------------------------------------------------ trava da sessão
 
@@ -102,15 +114,7 @@ def pasta_de_dados_temporaria():
 
 # ------------------------------------------------------------------- rede
 
-def _loopback(host) -> bool:
-    if host in (None, "", b"", "localhost", b"localhost"):
-        return True
-    if isinstance(host, bytes):
-        host = host.decode()
-    try:
-        return ipaddress.ip_address(str(host).split("%")[0]).is_loopback
-    except ValueError:
-        return False
+_loopback = guarda_rede.loopback
 
 
 @pytest.fixture(autouse=True)
