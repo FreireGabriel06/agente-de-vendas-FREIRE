@@ -17,6 +17,7 @@ import os
 import shutil
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import config as config_mod
 from config import DATA_DIR, config
@@ -128,6 +129,17 @@ def _contagem(sql: str, nome: str, conselho: str) -> tuple[str, str]:
     return ("atencao", f"{n} {nome}; {conselho}") if n else ("ok", f"nenhum(a) {nome}")
 
 
+def _banco_na_pasta() -> tuple[str, str]:
+    """DB_PATH absoluto fora da pasta de dados pode ser o banco de outra
+    instância (outro cliente). Achado S-35 da auditoria."""
+    bruto = os.getenv("DB_PATH", "").strip()
+    if bruto and Path(bruto).expanduser().is_absolute() and \
+            not Path(bruto).expanduser().resolve().is_relative_to(Path(DATA_DIR).resolve()):
+        return "atencao", ("DB_PATH aponta para fora da pasta de dados desta instância; "
+                           "confira se não é o banco de outro cliente")
+    return "ok", "dentro da pasta de dados"
+
+
 def _disco() -> tuple[str, str]:
     livre_mb = shutil.disk_usage(DATA_DIR).free // (1024 * 1024)
     if livre_mb < DISCO_FALHA_MB:
@@ -149,6 +161,7 @@ def verificar(completo: bool = False) -> dict:
     (leem o banco inteiro; para o cli.py, não para o monitor)."""
     verificacoes = [
         ("banco", lambda: _banco(completo)),
+        ("banco_na_pasta", _banco_na_pasta),
         ("cofre", _cofre),
         ("chave_lgpd", _chave_lgpd),
         ("worker", _worker),

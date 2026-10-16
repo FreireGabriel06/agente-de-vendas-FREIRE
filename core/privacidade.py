@@ -270,10 +270,12 @@ def envio_para_rastreio(pedido_id: int, endereco_json: str | None) -> str | None
 
 def expurgar(dias: int = RETENCAO_DIAS) -> int:
     """
-    Apaga o PII de pedidos antigos, mantendo o registro contábil.
+    Apaga o PII de pedidos antigos, mantendo o registro contábil, e o texto
+    das perguntas de compradores em aprovações já decididas (lote E8; achado
+    S-16 da auditoria). O worker roda isto uma vez por dia (worker.expurgo_diario).
 
-    Rode isso por cron. Dado pessoal guardado além da necessidade não é
-    arquivo — é passivo. Se vazar, você responde por ele.
+    Dado pessoal guardado além da necessidade não é arquivo — é passivo. Se
+    vazar, você responde por ele.
     """
     corte = (datetime.now(timezone.utc) - timedelta(days=dias)).isoformat(timespec="seconds")
     with conectar() as conn:
@@ -286,11 +288,35 @@ def expurgar(dias: int = RETENCAO_DIAS) -> int:
                 "UPDATE pedidos SET comprador_nome = NULL, comprador_id = NULL,"
                 " endereco_json = '{}' WHERE id = ?", (a["id"],),
             )
+        perguntas = _expurgar_perguntas(conn, corte)
     for a in alvos:
         registrar_acesso(a["id"], "expurgo", "cron", f"retenção de {dias} dias vencida")
     if alvos:
         registrar_evento("info", "lgpd", f"{len(alvos)} pedido(s) tiveram PII expurgado")
+    if perguntas:
+        registrar_evento("info", "lgpd", f"{perguntas} pergunta(s) de comprador expurgada(s) da fila")
     return len(alvos)
+
+
+def _expurgar_perguntas(conn, corte: str) -> int:
+    """A pergunta só serve enquanto a resposta espera decisão. Decidida e mais
+    velha que a retenção, o texto sai do payload e do resumo; o id da pergunta
+    e a resposta publicada ficam."""
+    n = 0
+    for linha in conn.execute(
+            "SELECT id, payload_json FROM aprovacoes WHERE tipo = 'resposta_cliente'"
+            " AND status NOT IN ('pendente', 'aprovada', 'incerta') AND criado_em < ?",
+            (corte,)).fetchall():
+        payload = json.loads(linha["payload_json"])
+        if not payload.get("pergunta"):
+            continue
+        payload["pergunta"] = ""
+        conn.execute("UPDATE aprovacoes SET payload_json = ?, resumo = ? WHERE id = ?",
+                     (json.dumps(payload, ensure_ascii=False),
+                      f"Responder pergunta {payload.get('question_id', '?')} (pergunta expurgada)",
+                      linha["id"]))
+        n += 1
+    return n
 
 
 # ------------------------------------------------- Direitos do titular (art. 18)

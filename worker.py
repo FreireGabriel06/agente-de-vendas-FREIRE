@@ -804,6 +804,24 @@ def ciclo() -> dict:
         return _passada()
 
 
+def expurgo_diario():
+    """Retenção de dados pessoais (RETENCAO_PII_DIAS) uma vez por dia (UTC).
+    Antes, o expurgo só rodava se alguém clicasse no painel."""
+    hoje = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    with conectar() as conn:
+        linha = conn.execute("SELECT valor FROM estado_sistema WHERE chave = 'expurgo_ultimo'"
+                             ).fetchone()
+    if linha is not None and linha[0] == hoje:
+        return "já rodou hoje"
+    expurgados = privacidade.expurgar()
+    with conectar() as conn:
+        conn.execute("INSERT INTO estado_sistema (chave, valor, atualizado_em) VALUES"
+                     " ('expurgo_ultimo', ?, ?) ON CONFLICT(chave) DO UPDATE SET"
+                     " valor = excluded.valor, atualizado_em = excluded.atualizado_em",
+                     (hoje, agora()))
+    return expurgados
+
+
 def sincronizar_amazon():
     """Pedidos da Amazon, só leitura (core/sincronizacao.py). Sem credenciais
     da Amazon, a etapa não roda e diz por quê. Leitura acontece mesmo com a
@@ -839,6 +857,7 @@ def _passada() -> dict:
 
     for nome, func in [
         ("interrompidas", aprovacao.recuperar_interrompidas),
+        ("expurgo", expurgo_diario),
         ("ingeridos", lambda: ingerir_mercadolivre(ml)),
         ("analisados", analisar_novos),
         ("ordens_montadas", montar_ordens_de_compra),
