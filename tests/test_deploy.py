@@ -62,6 +62,7 @@ def test_dockerignore_barra_dados_e_segredos():
 def test_modelo_de_instancia_liga_o_que_o_painel_exposto_exige():
     texto = (DEPLOY / "instancia.exemplo.env").read_text(encoding="utf-8")
     assert "HOSTS_PAINEL=" in texto and "MFA_OBRIGATORIO=true" in texto
+    assert "AMZ_APP_VERSAO=beta" in texto
     assert "AMZ_REDIRECT_URI=https://" in texto and "ML_REDIRECT_URI=https://" in texto
     compose = (DEPLOY / "docker-compose.yml").read_text(encoding="utf-8")
     assert "PROXY_IPS: 172.30.0.2" in compose and "ipv4_address: 172.30.0.2" in compose
