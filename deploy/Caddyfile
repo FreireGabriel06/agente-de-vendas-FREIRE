@@ -1,0 +1,18 @@
+# DOMINIO comes from deploy/.env (for example: agentecomercial.com).
+
+# Public website: what the service is, privacy policy and terms of service.
+{$DOMINIO}, www.{$DOMINIO} {
+	root * /srv/site
+	file_server
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "same-origin"
+	}
+}
+
+# One block per client instance. The panel sets its own security headers.
+cliente1.{$DOMINIO} {
+	reverse_proxy cliente1:8777
+}

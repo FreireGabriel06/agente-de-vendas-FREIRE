@@ -161,6 +161,9 @@ cp .env.example .env             # Windows: copy .env.example .env
 python executar.py
 ```
 
+To run it on a server for clients (HTTPS, one isolated instance per client, public website
+with privacy policy and terms), see [deploy/README.md](deploy/README.md).
+
 Before you rely on it:
 
 - **Create the operator before the first login:**

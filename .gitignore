@@ -132,3 +132,10 @@ ordens_de_compra/
 .agents/
 .claude/
 skills-lock.json
+
+# ---------------------------------------------------------------
+# DEPLOY — real instance settings and the filled website stay local
+# ---------------------------------------------------------------
+deploy/instancias/*.env
+deploy/site-pronto/
+deploy/.env

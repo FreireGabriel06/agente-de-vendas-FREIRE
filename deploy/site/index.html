@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{MARCA}} — operations assistant for marketplace sellers</title>
+<meta name="description" content="{{MARCA}} helps marketplace sellers in the United States, Europe and Latin America keep track of orders, listings, stock and margins, with every action approved by a person.">
+<link rel="stylesheet" href="estilo.css">
+</head>
+<body>
+<header class="topo">
+  <p class="marca">{{MARCA}}</p>
+  <nav><a href="#how">How it works</a><a href="#security">Security</a><a href="#contact">Contact</a></nav>
+</header>
+
+<main>
+  <section class="abertura">
+    <h1>Your marketplace operation, watched around the clock. Every decision stays yours.</h1>
+    <p>{{MARCA}} is an operations assistant for sellers on Amazon and Mercado Livre in the
+      United States, Europe and Latin America. It reads your orders, listings and stock, checks
+      margins and compliance, and tells you what needs attention. Nothing that costs money or
+      speaks for your store happens without your approval.</p>
+    <p class="nota">Currently in closed beta, by invitation.</p>
+  </section>
+
+  <section id="how">
+    <h2>How it works</h2>
+    <ol>
+      <li><b>Connect your seller account</b> through the marketplace's own authorization page.
+        We never ask for your marketplace password.</li>
+      <li><b>We read what you authorize</b>: orders, listings, prices and stock. On Amazon the
+        service is read-only and stores no buyer name, address, e-mail or phone.</li>
+      <li><b>You see what matters</b>: low stock, failed synchronizations, stale data, orders
+        stuck in a problem state, and the margin of each sale after fees and taxes.</li>
+      <li><b>You approve every action</b>: purchase orders, price changes and replies to buyers
+        wait in a queue until you approve them.</li>
+    </ol>
+  </section>
+
+  <section id="security">
+    <h2>Security and privacy</h2>
+    <ul>
+      <li>Each client runs in an isolated instance with its own database and encryption keys.</li>
+      <li>HTTPS everywhere; login with a password and an authenticator code; accounts lock after
+        repeated failures.</li>
+      <li>Marketplace credentials are encrypted at rest and never written to logs.</li>
+      <li>Audit trail of every sign-in and action; encrypted backups.</li>
+      <li>Amazon data is deleted within 30 days when you revoke access.</li>
+    </ul>
+    <p>Read the <a href="privacy.html">Privacy Policy</a> and the
+      <a href="terms.html">Terms of Service</a>.</p>
+  </section>
+
+  <section id="contact">
+    <h2>Contact</h2>
+    <p>{{EMPRESA}}<br>{{ENDERECO}}<br>
+      E-mail: <a href="mailto:{{EMAIL}}">{{EMAIL}}</a></p>
+  </section>
+</main>
+
+<footer>
+  <p>© {{ANO}} {{EMPRESA}} · <a href="privacy.html">Privacy</a> · <a href="terms.html">Terms</a></p>
+  <p class="nota">Amazon and Mercado Livre are trademarks of their respective owners. {{MARCA}}
+    is an independent service and is not affiliated with them.</p>
+</footer>
+</body>
+</html>

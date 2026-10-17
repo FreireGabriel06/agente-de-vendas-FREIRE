@@ -1,0 +1,30 @@
+# Nothing with data or secrets goes into an image.
+.env
+.env.*
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.chave_*
+.token_*
+.trava_*
+.eliminacoes_lgpd.jsonl
+*.agvbkp
+ordens_de_compra/
+dados/
+backups/
+deploy/instancias/
+deploy/site-pronto/
+
+# Development only
+.git
+.github
+.venv
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+.claude/
+README.pt-BR.md
