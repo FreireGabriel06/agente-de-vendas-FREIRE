@@ -1,0 +1,53 @@
+# Public website plus one isolated instance per client, behind Caddy, which
+# obtains and renews the HTTPS certificates by itself (Let's Encrypt).
+#
+#   cd deploy
+#   python preencher_site.py           # writes site-pronto/ from the template
+#   docker compose up -d --build
+#
+# Add a client: copy the "cliente1" service, its volume and its block in the
+# Caddyfile, and create instancias/<name>.env from instancia.exemplo.env.
+name: agente
+
+services:
+  caddy:
+    image: caddy:2.8.4
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMINIO: ${DOMINIO:?defina DOMINIO no arquivo deploy/.env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./site-pronto:/srv/site:ro
+      - caddy_dados:/data
+      - caddy_config:/config
+    networks:
+      interna:
+        ipv4_address: 172.30.0.2
+
+  cliente1:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    env_file: instancias/cliente1.env
+    environment:
+      # Only Caddy, at this fixed address, may set X-Forwarded-Proto.
+      PROXY_IPS: 172.30.0.2
+    volumes:
+      - dados_cliente1:/dados
+    networks:
+      - interna
+
+volumes:
+  caddy_dados:
+  caddy_config:
+  dados_cliente1:
+
+networks:
+  interna:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
