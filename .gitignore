@@ -139,3 +139,6 @@ skills-lock.json
 deploy/instancias/*.env
 deploy/site-pronto/
 deploy/.env
+deploy/.backup_senha
+deploy/backups/
+deploy/rotina.log

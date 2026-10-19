@@ -32,15 +32,35 @@ docker compose up -d --build
 Open `https://cliente1.example.com`, sign in, save the Amazon LWA client ID
 and secret under Connections and authorize the seller account.
 
-## Every day
+## Every day (automatic)
+
+`rotina_diaria.sh` checks the health of every client instance, creates an
+encrypted backup, copies the backups to `deploy/backups/<client>/` and keeps
+the newest 14. Set it up once:
 
 ```bash
-docker compose exec cliente1 python cli.py saude --completo
-docker compose exec cliente1 python cli.py backup criar --destino /dados/backups
+cd ~/agente/deploy
+openssl rand -base64 24 > .backup_senha && chmod 600 .backup_senha
+cat .backup_senha        # store this password away from the server
+./rotina_diaria.sh && tail rotina.log
+echo "30 3 * * * root $PWD/rotina_diaria.sh" > /etc/cron.d/agente
 ```
 
-Copy the `.agvbkp` files off the server (they are encrypted; keep the backup
-password elsewhere). Point an uptime monitor at `https://cliente1.example.com/saude`.
+Copy `deploy/backups/` off the server from time to time
+(`scp -r root@server:agente/deploy/backups .`). Point an uptime monitor at
+`https://cliente1.example.com/saude` (it answers 503 when something needs
+attention).
+
+## Before the Amazon registration
+
+From any computer with Python:
+
+```bash
+python deploy/verificar_site.py example.com
+```
+
+It checks HTTPS, the redirect from HTTP, the privacy policy and terms (no
+unfilled field) and the client panel.
 
 ## Another client
 

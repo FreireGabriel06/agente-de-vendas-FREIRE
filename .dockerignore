@@ -28,3 +28,8 @@ __pycache__/
 htmlcov/
 .claude/
 README.pt-BR.md
+**/*.agvbkp
+deploy/backups/
+deploy/.backup_senha
+deploy/.env
+deploy/rotina.log
