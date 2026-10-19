@@ -29,6 +29,7 @@ def _pendencias_com_conformidade() -> list[dict]:
             "id": a.id,
             "tipo": a.tipo,
             "resumo": a.resumo,
+            "previa": aprovacao.previa(a),
             "valor": a.valor,
             # A moeda do valor, como a ordem a gravou; None é "moeda não
             # informada" (fila de versão anterior, ou item sem dinheiro).

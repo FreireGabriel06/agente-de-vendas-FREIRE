@@ -23,6 +23,7 @@ Regra que vale respeitar: ação irreversível não se automatiza. Nenhuma
 margem de lucro paga uma conta suspensa ou uma compra errada em lote.
 """
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Callable
@@ -73,6 +74,27 @@ def _da_linha(l) -> Aprovacao:
         id=l["id"], tipo=l["tipo"], pedido_id=l["pedido_id"], resumo=l["resumo"],
         payload=json.loads(l["payload_json"]), valor=l["valor"], status=l["status"],
     )
+
+
+_CONTROLE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def previa(a: Aprovacao) -> str | None:
+    """O que vai sair se você aprovar, para ler antes de decidir (auditoria,
+    S-01: aprovar resposta do bot sem ver o rascunho). Resposta ao comprador:
+    o texto exato que será publicado. Ajuste de preço: o anúncio e o preço
+    novo. Caracteres de controle viram espaço: o texto vem do modelo e
+    também é impresso no terminal (cli.py pendencias)."""
+    if a.tipo == "resposta_cliente":
+        texto = a.payload.get("resposta")
+    elif a.tipo == "ajuste_preco":
+        item, preco = a.payload.get("item_id"), a.payload.get("preco")
+        texto = f"Preço do anúncio {item} passa a {preco}" if item and preco is not None else None
+    else:
+        return None
+    if not isinstance(texto, str) or not texto.strip():
+        return None
+    return _CONTROLE.sub(" ", texto)
 
 
 def enfileirar(tipo: str, resumo: str, payload: dict,
