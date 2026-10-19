@@ -87,6 +87,8 @@ tbody tr[data-bloqueado="1"]:hover{background:#EDE0DC}
 }
 .motivo b{color:var(--risco)}
 .motivo .saida{display:block; margin-top:.25rem; color:var(--tinta-fraca)}
+.previa{margin-top:.4rem; padding:.35rem .6rem; border-left:2px solid var(--tinta-fraca); white-space:pre-wrap}
+.previa span{display:block; font-size:.8em; color:var(--tinta-fraca)}
 
 /* ---------- ações ---------- */
 .acoes{display:flex; gap:.4rem; justify-content:flex-end}
@@ -323,7 +325,7 @@ window.fetch = async (url, opcoes = {}) => {
 
 const $ = s => document.querySelector(s);
 const brl = v => (v ?? 0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
-const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 let fila = [], foco = 0, abaAtiva = 'fila', modoSimulacao = true;
 
@@ -379,7 +381,7 @@ async function carregarFila(){
            <button class="acao nao" onclick="recusar(${i.id})">Recusar</button></div>`;
     return `<tr data-foco="${n===foco?1:0}" data-bloqueado="${i.bloqueado?1:0}" data-id="${i.id}">
       <td class="num">${i.id}</td>
-      <td>${esc(i.resumo)}${i.marketplace?`<div class="marca-mp">${esc(i.marketplace)}</div>`:''}${motivos}</td>
+      <td>${esc(i.resumo)}${i.marketplace?`<div class="marca-mp">${esc(i.marketplace)}</div>`:''}${i.previa?`<div class="previa"><span>Sai assim se aprovar:</span>${esc(i.previa)}</div>`:''}${motivos}</td>
       <td class="dir num verba">${i.valor ? brl(i.valor) : '—'}</td>
       <td class="dir num esconde-mobile">${margem}</td>
       <td class="dir">${decisao}</td></tr>`;
@@ -533,9 +535,9 @@ async function carregarConfig(){
       ? `<p style="margin:.2rem 0 .9rem;font-size:.9rem">URI de redirect pra colar no portal:<br>
          <code style="background:var(--realce);padding:.25rem .5rem;display:inline-block;margin-top:.25rem;word-break:break-all">${esc(c.redirect_uri)}</code>
          <button class="acao" style="margin-left:.4rem;min-height:28px;padding:.15rem .6rem"
-           onclick="navigator.clipboard.writeText('${esc(c.redirect_uri)}');this.textContent='copiado'">copiar</button></p>` : '';
+           data-copiar="${esc(c.redirect_uri)}" onclick="navigator.clipboard.writeText(this.dataset.copiar);this.textContent='copiado'">copiar</button></p>` : '';
     const autorizar = (prov==='mercadolivre'||prov==='shopee')
-      ? `<button class="acao ok" onclick="autorizar('${prov}')">Autorizar no site deles</button>` : '';
+      ? `<button class="acao ok" data-prov="${esc(prov)}" onclick="autorizar(this.dataset.prov)">Autorizar no site deles</button>` : '';
     const concluir = prov==='mercadolivre'
       ? `<div style="margin-top:.9rem;padding-top:.9rem;border-top:1px dashed var(--linha)">
            <label for="ml-retorno" style="font-size:.9rem;color:var(--tinta-fraca);display:block;margin-bottom:.4rem">
@@ -555,9 +557,9 @@ async function carregarConfig(){
            style="color:var(--saldo);font-weight:600">Abrir o portal ↗</a></p>
         <div class="linha-campos">${campos}</div>
         <div class="acoes" style="justify-content:flex-start">
-          <button class="acao ok" onclick="salvarConfig('${prov}')">Salvar chaves</button>
+          <button class="acao ok" data-prov="${esc(prov)}" onclick="salvarConfig(this.dataset.prov)">Salvar chaves</button>
           ${autorizar}
-          <button class="acao" onclick="testarConexao('${prov}')">Testar conexão</button>
+          <button class="acao" data-prov="${esc(prov)}" onclick="testarConexao(this.dataset.prov)">Testar conexão</button>
         </div>
         ${concluir}
         <div id="teste-${prov}"></div>

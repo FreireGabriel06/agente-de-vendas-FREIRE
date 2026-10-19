@@ -79,6 +79,11 @@ def cmd_pendencias(_):
     for a in itens:
         valor = f"R$ {a.valor:.2f}" if a.valor else "—"
         print(f"  [{a.id}] {a.tipo:<20} {valor:>12}  {a.resumo}")
+        texto = aprovacao.previa(a)
+        if texto:
+            print("       Sai assim se aprovar:")
+            for linha in texto.splitlines() or [texto]:
+                print(f"       | {linha}")
         # A mesma checagem do painel e da aprovação.
         checagem = aprovacao.checar(a)
         if checagem.bloqueado:
