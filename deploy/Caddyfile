@@ -16,3 +16,6 @@
 cliente1.{$DOMINIO} {
 	reverse_proxy cliente1:8777
 }
+
+# Clients added with novo_cliente.py (one file each).
+import /etc/caddy/clientes/*.caddy

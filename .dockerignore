@@ -33,3 +33,5 @@ deploy/backups/
 deploy/.backup_senha
 deploy/.env
 deploy/rotina.log
+deploy/docker-compose.override.yml
+deploy/clientes-caddy/

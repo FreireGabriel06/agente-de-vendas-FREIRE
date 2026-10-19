@@ -9,8 +9,8 @@ keys and backups. Tested in CI by building the image and starting it.
 
 - A Linux server with Docker and Docker Compose (any small VPS works; 1 vCPU
   and 1 GB of RAM are enough for a few clients).
-- A domain whose `A` records point to the server: `example.com`,
-  `www.example.com` and one name per client (`cliente1.example.com`).
+- A domain whose `A` records point to the server: `example.com` and a
+  wildcard `*.example.com` (covers `www` and every client).
 
 ## First start
 
@@ -64,10 +64,15 @@ unfilled field) and the client panel.
 
 ## Another client
 
-Copy the `cliente1` service and its volume in `docker-compose.yml`, add a
-`cliente2.{$DOMINIO}` block to the `Caddyfile`, create
-`instancias/cliente2.env`, register the new redirect URI in the Amazon app and
-run `docker compose up -d --build`.
+```bash
+python3 novo_cliente.py        # creates cliente2 (or: python3 novo_cliente.py cliente-name)
+```
+
+It writes `instancias/cliente2.env`, `docker-compose.override.yml` and
+`clientes-caddy/cliente2.caddy`, then prints the commands to create the
+operator, start the instance and reload Caddy, and the redirect URIs to add to
+the Amazon and Mercado Livre apps. A wildcard DNS record (`*.example.com`)
+avoids a DNS change per client.
 
 ## Updating
 
