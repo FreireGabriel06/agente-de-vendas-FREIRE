@@ -9,8 +9,9 @@ import secrets
 from fastapi import Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from db import definir_ator
+from db import definir_ator, registrar_evento
 from core import seguranca
+from core.erros import pilha_sem_mensagem
 # ------------------------------------------------------------- Autenticação
 #
 # Toda rota exige sessão, menos a tela de login e a chamada que a atende.
@@ -123,10 +124,38 @@ async def cabecalhos_de_seguranca(request: Request, call_next):
     return resposta
 
 
+async def identificar_requisicao(request: Request, call_next):
+    """Um código curto por requisição (achado S-21): vai no cabeçalho
+    X-Request-ID e, numa falha inesperada, na tela e no evento, para achar o
+    evento a partir do que o operador vê. A exceção não sobe ao servidor: o
+    uvicorn imprimiria a mensagem dela no log do container, e a mensagem de
+    uma exceção qualquer pode repetir um valor decifrado do cofre (S-06). O
+    evento guarda só o tipo e a pilha, sem a mensagem."""
+    codigo = secrets.token_hex(6)
+    request.state.codigo_requisicao = codigo
+    try:
+        resposta = await call_next(request)
+    except Exception as e:
+        try:
+            registrar_evento("erro", "painel",
+                             f"Falha inesperada em {request.method} {request.url.path}"
+                             f" (código {codigo}): {type(e).__name__}",
+                             {"codigo": codigo, "traceback": pilha_sem_mensagem(e)})
+        except Exception:
+            pass  # sem banco, a resposta ainda sai com o código
+        resposta = JSONResponse(
+            {"detail": f"Falha inesperada ({type(e).__name__}). Código para o suporte: {codigo}"},
+            status_code=500)
+    resposta.headers["X-Request-ID"] = codigo
+    return resposta
+
+
 def instalar(app) -> None:
     """O último middleware registrado roda primeiro: cabecalhos_de_seguranca
-    fica por fora, para o 400, o 401 e o redirecionamento também levarem os
-    cabeçalhos; host_permitido vem antes da sessão."""
+    fica por fora, para o 400, o 401, o redirecionamento e o 500 também
+    levarem os cabeçalhos; identificar_requisicao dá o código a tudo, inclusive
+    ao que host_permitido recusa; host_permitido vem antes da sessão."""
     app.middleware("http")(exigir_sessao)
     app.middleware("http")(host_permitido)
+    app.middleware("http")(identificar_requisicao)
     app.middleware("http")(cabecalhos_de_seguranca)
