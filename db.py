@@ -338,8 +338,68 @@ def _gatilhos_da_coluna_real(conn):
                 f" WHERE id = NEW.id; END")
 
 
+# ------------------------------------------------------------ Versão do esquema
+#
+# PRAGMA user_version guarda a versão do esquema no próprio arquivo do banco.
+# A versão 1 é o esquema montado por SCHEMA + COLUNAS_ACRESCENTADAS (o que
+# todo banco anterior a este controle já tem depois de inicializar()). Uma
+# mudança que o "CREATE IF NOT EXISTS"/"ADD COLUMN" não cobre (renomear,
+# mudar tipo, mover dado) entra como uma função em MIGRACOES com o número
+# seguinte, e VERSAO_ESQUEMA sobe junto. Regras:
+#   - as migrações pendentes rodam juntas numa transação só (BEGIN IMMEDIATE):
+#     ou o banco chega à versão nova inteiro, ou fica como estava;
+#   - nenhuma cópia solta do banco é feita antes: ela escaparia da exclusão
+#     de 30 dias da Amazon. Antes de atualizar, o backup cifrado (cli.py
+#     backup criar) é o caminho;
+#   - banco com versão MAIOR que a deste código (imagem antiga sobre dados
+#     já migrados) é recusado antes de qualquer escrita: falha fechada.
+
+VERSAO_ESQUEMA = 1
+MIGRACOES: dict = {}  # versão -> função(conn) que leva da versão anterior a ela
+
+
+class EsquemaMaisNovo(RuntimeError):
+    """O banco foi migrado por uma versão mais nova do agente."""
+
+
+def versao_esquema(conn) -> int:
+    return conn.execute("PRAGMA user_version").fetchone()[0]
+
+
+def _recusar_mais_novo(conn, alvo: int):
+    atual = versao_esquema(conn)
+    if atual > alvo:
+        raise EsquemaMaisNovo(
+            f"O banco está na versão {atual} do esquema e este agente conhece até a {alvo}. "
+            "Atualize o agente (git pull e docker compose up -d --build); não volte a versão "
+            "do código sobre um banco já migrado.")
+
+
+def _migrar(conn, migracoes: dict | None = None, alvo: int | None = None):
+    migracoes = MIGRACOES if migracoes is None else migracoes
+    alvo = VERSAO_ESQUEMA if alvo is None else alvo
+    if versao_esquema(conn) == alvo:
+        return
+    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        # Relê sob a trava: outro processo pode ter migrado enquanto este esperava.
+        atual = versao_esquema(conn)
+        _recusar_mais_novo(conn, alvo)
+        for versao in range(max(atual, 1) + 1, alvo + 1):
+            migracoes[versao](conn)
+        if atual != alvo:
+            conn.execute(f"PRAGMA user_version = {int(alvo)}")
+        conn.execute("COMMIT")
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
+
 def inicializar():
     with conectar() as conn:
+        _recusar_mais_novo(conn, VERSAO_ESQUEMA)
         conn.executescript(SCHEMA)
         for tabela, colunas in COLUNAS_ACRESCENTADAS.items():
             existentes = {linha["name"] for linha in conn.execute(f"PRAGMA table_info({tabela})")}
@@ -351,6 +411,7 @@ def inicializar():
                         _copiar_da_coluna_real(conn, tabela, real)
         _gatilhos_da_coluna_real(conn)
         _trilha_so_de_inclusao(conn)
+        _migrar(conn)
 
 
 # ------------------------------------------------------------ Trilha de eventos

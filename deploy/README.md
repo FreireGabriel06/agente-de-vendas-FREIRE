@@ -80,4 +80,7 @@ avoids a DNS change per client.
 git pull && docker compose up -d --build
 ```
 
-Data stays in the volumes. Take a backup first.
+Data stays in the volumes. Take a backup first (`./rotina_diaria.sh`). The
+database schema is versioned: an update migrates it on start, all at once or
+not at all, and an older image refuses to start on a database a newer one
+migrated. To go back, restore the backup taken before the update.
