@@ -1537,14 +1537,15 @@ def test_dois_ciclos_ao_mesmo_tempo_nao_repoem_a_compra_duas_vezes(sessao, fila_
     monkeypatch.setattr(config.config, "modo_simulacao", False)
     monkeypatch.setattr(worker, "MercadoLivre", MercadoLivreDoCiclo)
     bloqueio = Bloqueio()
-    ler = worker._compras_simuladas
+    from tarefas import compras
+    ler = compras._compras_simuladas
 
     def ler_e_esperar(conn):  # o ciclo de fundo para entre a leitura e a fila
         linhas = ler(conn)
         bloqueio.esperar_se_primeira()
         return linhas
 
-    monkeypatch.setattr(worker, "_compras_simuladas", ler_e_esperar)
+    monkeypatch.setattr(compras, "_compras_simuladas", ler_e_esperar)
 
     fundo, r = tecla_c_durante_o_ciclo_de_fundo(cliente, csrf, bloqueio)
 
