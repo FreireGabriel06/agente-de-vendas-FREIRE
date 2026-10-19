@@ -21,6 +21,7 @@ from pathlib import Path
 
 import config as config_mod
 from config import DATA_DIR, config
+import db
 from db import agora, conectar, verificar_trilha
 
 NIVEIS = ("ok", "atencao", "falha")
@@ -45,6 +46,17 @@ def _banco(completo: bool) -> tuple[str, str]:
     except sqlite3.Error as e:
         return "falha", f"banco inacessível ({type(e).__name__})"
     return "ok", "acessível" + (" e íntegro" if completo else "")
+
+
+def _esquema() -> tuple[str, str]:
+    with conectar() as conn:
+        versao = db.versao_esquema(conn)
+    if versao > db.VERSAO_ESQUEMA:
+        return "falha", (f"banco na versão {versao} do esquema; este agente conhece até a "
+                         f"{db.VERSAO_ESQUEMA}: atualize o agente")
+    if versao < db.VERSAO_ESQUEMA:
+        return "atencao", f"banco na versão {versao}; reinicie o agente para migrar"
+    return "ok", f"versão {versao}"
 
 
 def _cofre() -> tuple[str, str]:
@@ -162,6 +174,7 @@ def verificar(completo: bool = False) -> dict:
     verificacoes = [
         ("banco", lambda: _banco(completo)),
         ("banco_na_pasta", _banco_na_pasta),
+        ("esquema", _esquema),
         ("cofre", _cofre),
         ("chave_lgpd", _chave_lgpd),
         ("worker", _worker),
