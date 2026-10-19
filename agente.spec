@@ -17,6 +17,7 @@ a = Analysis(
         'core.cofre', 'core.cadastro', 'core.dinheiro', 'core.sincronizacao', 'core.alertas', 'core.backup', 'core.erros', 'core.saude',
         'inteligencia.precificacao', 'inteligencia.tendencias',
         'atendimento.persona', 'atendimento.bot', 'atendimento.claude_api', 'worker',
+        'tarefas.compras', 'tarefas.marketplace',
     ],
     hookspath=[], runtime_hooks=[], excludes=['matplotlib', 'tkinter'],
     noarchive=False,
