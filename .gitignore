@@ -142,3 +142,5 @@ deploy/.env
 deploy/.backup_senha
 deploy/backups/
 deploy/rotina.log
+deploy/docker-compose.override.yml
+deploy/clientes-caddy/

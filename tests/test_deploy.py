@@ -187,3 +187,75 @@ def test_rotina_sem_senha_nao_roda(tmp_path):
 def test_senha_e_backups_do_servidor_ficam_fora_do_git():
     for caminho in ("deploy/.backup_senha", "deploy/backups/cliente1/x.agvbkp", "deploy/rotina.log"):
         assert subprocess.run(["git", "check-ignore", "-q", caminho], cwd=RAIZ).returncode == 0, caminho
+
+
+def carregar_novo_cliente():
+    spec = importlib.util.spec_from_file_location("novo_cliente", DEPLOY / "novo_cliente.py")
+    modulo = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(modulo)
+    return modulo
+
+
+@pytest.fixture
+def pasta_deploy(tmp_path):
+    shutil.copy(DEPLOY / "instancia.exemplo.env", tmp_path / "instancia.exemplo.env")
+    (tmp_path / ".env").write_text("DOMINIO=marca.com\n", encoding="utf-8")
+    (tmp_path / "instancias").mkdir()
+    (tmp_path / "instancias" / "cliente1.env").write_text("x", encoding="utf-8")
+    return tmp_path
+
+
+def test_novo_cliente_cria_instancia_servico_e_bloco_https(pasta_deploy, capsys):
+    nc = carregar_novo_cliente()
+    assert nc.main([], pasta_deploy) == 0
+    assert nc.main([], pasta_deploy) == 0
+    env2 = (pasta_deploy / "instancias" / "cliente2.env").read_text(encoding="utf-8")
+    assert "HOSTS_PAINEL=cliente2.marca.com" in env2
+    assert "AMZ_REDIRECT_URI=https://cliente2.marca.com/oauth/amazon/retorno" in env2
+    assert "ML_REDIRECT_URI=https://cliente2.marca.com/oauth/ml/retorno" in env2
+    assert "example.com" not in env2
+    override = (pasta_deploy / "docker-compose.override.yml").read_text(encoding="utf-8")
+    for n in ("cliente2", "cliente3"):
+        assert f"  {n}:\n" in override and f"env_file: instancias/{n}.env" in override
+        assert f"- dados_{n}:/dados" in override and f"  dados_{n}:\n" in override
+        bloco = (pasta_deploy / "clientes-caddy" / f"{n}.caddy").read_text(encoding="utf-8")
+        assert f"{n}.{{$DOMINIO}} {{" in bloco and f"reverse_proxy {n}:8777" in bloco
+    assert "  cliente1:" not in override
+    assert override.count("PROXY_IPS: 172.30.0.2") == 2
+    assert "https://cliente3.marca.com/oauth/amazon/login" in capsys.readouterr().out
+
+
+def test_novo_cliente_com_nome_e_remocao(pasta_deploy):
+    nc = carregar_novo_cliente()
+    nc.main(["cliente-lojax"], pasta_deploy)
+    assert (pasta_deploy / "clientes-caddy" / "cliente-lojax.caddy").exists()
+    (pasta_deploy / "instancias" / "cliente-lojax.env").unlink()
+    assert nc.gerar(pasta_deploy) == []
+    assert not (pasta_deploy / "clientes-caddy" / "cliente-lojax.caddy").exists()
+    assert "services: {}" in (pasta_deploy / "docker-compose.override.yml").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("nome", ["cliente1", "loja", "cliente_x", "Cliente2", "cliente2;rm", "cliente" + "a" * 31])
+def test_novo_cliente_recusa_nome_invalido(pasta_deploy, nome):
+    nc = carregar_novo_cliente()
+    with pytest.raises(SystemExit, match="Nome inválido"):
+        nc.main([nome], pasta_deploy)
+
+
+def test_novo_cliente_nao_sobrescreve_nem_roda_sem_dominio(pasta_deploy):
+    nc = carregar_novo_cliente()
+    nc.main(["cliente2"], pasta_deploy)
+    with pytest.raises(SystemExit, match="já existe"):
+        nc.main(["cliente2"], pasta_deploy)
+    (pasta_deploy / ".env").write_text("OUTRA=1\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="DOMINIO"):
+        nc.main([], pasta_deploy)
+
+
+def test_caddy_e_compose_leem_os_clientes_gerados():
+    caddyfile = (DEPLOY / "Caddyfile").read_text(encoding="utf-8")
+    assert "import /etc/caddy/clientes/*.caddy" in caddyfile
+    compose = (DEPLOY / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "./clientes-caddy:/etc/caddy/clientes:ro" in compose
+    for caminho in ("deploy/docker-compose.override.yml", "deploy/clientes-caddy/cliente2.caddy"):
+        assert subprocess.run(["git", "check-ignore", "-q", caminho], cwd=RAIZ).returncode == 0, caminho

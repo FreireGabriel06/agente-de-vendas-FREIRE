@@ -5,8 +5,8 @@
 #   python preencher_site.py           # writes site-pronto/ from the template
 #   docker compose up -d --build
 #
-# Add a client: copy the "cliente1" service, its volume and its block in the
-# Caddyfile, and create instancias/<name>.env from instancia.exemplo.env.
+# Add a client: python3 novo_cliente.py (writes docker-compose.override.yml
+# and clientes-caddy/, both ignored by git).
 name: agente
 
 services:
@@ -21,6 +21,7 @@ services:
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./site-pronto:/srv/site:ro
+      - ./clientes-caddy:/etc/caddy/clientes:ro
       - caddy_dados:/data
       - caddy_config:/config
     networks:
