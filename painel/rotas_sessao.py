@@ -1,6 +1,7 @@
 """
 Login, logout, sessão e as páginas (login e painel).
 """
+import os
 from pathlib import Path
 
 from fastapi import Request
@@ -18,8 +19,18 @@ rotas = APIRouter()
 # ---------------------------------------------------------------- Sessão
 
 @rotas.get("/login", response_class=HTMLResponse)
-def pagina_login():
-    return _pagina_login()
+def pagina_login(request: Request):
+    return com_nonce(_pagina_login(), request)
+
+
+def cookie_seguro(request: Request) -> bool:
+    """Secure quando a requisição veio por HTTPS ou quando a instância tem
+    HTTPS configurado (TLS_CERT ou PROXY_HTTPS). Assim um pedido que chegue
+    por HTTP a uma instância exposta (de dentro do container, ou de um proxy
+    mal configurado) não recebe o cookie de sessão sem a marca Secure."""
+    if request.url.scheme == "https" or os.getenv("TLS_CERT", "").strip():
+        return True
+    return os.getenv("PROXY_HTTPS", "").strip().lower() in ("1", "true", "sim", "yes")
 
 
 def _texto_do_corpo(valor) -> str:
@@ -59,7 +70,7 @@ async def api_login(request: Request):
     resposta = JSONResponse({"ok": True, "csrf": csrf})
     resposta.set_cookie(
         seguranca.COOKIE_SESSAO, sid, httponly=True, samesite="lax",
-        secure=request.url.scheme == "https",
+        secure=cookie_seguro(request),
         max_age=seguranca.DURACAO_MAX_H * 3600, path="/")
     return resposta
 
@@ -69,7 +80,8 @@ def api_logout(request: Request):
     seguranca.encerrar_sessao(request.cookies.get(seguranca.COOKIE_SESSAO))
     registrar_evento("info", "seguranca", f"Saída de {request.state.operador}")
     resposta = JSONResponse({"ok": True})
-    resposta.delete_cookie(seguranca.COOKIE_SESSAO, path="/")
+    resposta.delete_cookie(seguranca.COOKIE_SESSAO, path="/", httponly=True, samesite="lax",
+                           secure=cookie_seguro(request))
     return resposta
 
 
@@ -109,7 +121,7 @@ def _pagina_login() -> str:
   <button type="submit">Entrar</button>
   <p class="erro" id="erro" role="alert"></p>
 </form>
-<script>
+<script nonce="{{NONCE}}">
 document.getElementById('entrar').onsubmit = async ev => {
   ev.preventDefault();
   const r = await fetch('/api/login', {method:'POST',
@@ -128,6 +140,12 @@ document.getElementById('entrar').onsubmit = async ev => {
 
 # ------------------------------------------------------------------ Tela
 
+def com_nonce(html: str, request: Request) -> str:
+    """Põe o nonce desta resposta (protecao.cabecalhos_de_seguranca) no
+    <script> da página: só ele roda; script injetado, sem o nonce, não."""
+    return html.replace("{{NONCE}}", request.state.nonce)
+
+
 @rotas.get("/", response_class=HTMLResponse)
-def painel():
-    return (BASE / "painel.html").read_text(encoding="utf-8")
+def painel(request: Request):
+    return com_nonce((BASE / "painel.html").read_text(encoding="utf-8"), request)

@@ -3,6 +3,7 @@ Adds a client instance without editing YAML by hand.
 
     python3 novo_cliente.py            # next free name: cliente2, cliente3...
     python3 novo_cliente.py cliente-lojax
+    python3 novo_cliente.py --remover cliente2   # end of contract
 
 It creates instancias/<name>.env from instancia.exemplo.env (panel address
 <name>.<DOMINIO>) and regenerates, from every instancias/*.env except
@@ -69,6 +70,12 @@ def gerar(pasta: Path) -> list[str]:
             "      context: ..\n"
             "      dockerfile: deploy/Dockerfile\n"
             "    restart: unless-stopped\n"
+            "    cap_drop: [ALL]\n"
+            "    security_opt: [\"no-new-privileges:true\"]\n"
+            "    read_only: true\n"
+            "    tmpfs: [\"/tmp:size=64m,mode=1777\"]\n"
+            "    mem_limit: 768m\n"
+            "    pids_limit: 256\n"
             f"    env_file: instancias/{n}.env\n"
             "    environment:\n"
             "      PROXY_IPS: 172.30.0.2\n"
@@ -92,7 +99,38 @@ def gerar(pasta: Path) -> list[str]:
     return nomes
 
 
+def remover(pasta: Path, nome: str) -> list[str]:
+    """Fim de contrato: tira o cliente da configuração e devolve os comandos
+    que apagam os dados dele. Não apaga nada sozinho: o volume tem o banco e
+    as chaves, e apagar é irreversível. A Amazon pede a exclusão em até 30
+    dias depois do fim do uso; a LGPD, ao fim do tratamento."""
+    if not NOME.fullmatch(nome) or nome == FIXO:
+        raise SystemExit("Nome inválido: só clientes criados por este script (cliente1 fica no "
+                         "docker-compose.yml).")
+    env = pasta / "instancias" / f"{nome}.env"
+    if not env.exists():
+        raise SystemExit(f"{env.name} não existe.")
+    env.unlink()
+    gerar(pasta)
+    return [
+        f"docker rm -f agente-{nome}-1",
+        f"docker volume rm agente_dados_{nome}",
+        f"rm -rf backups/{nome}",
+        "docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile",
+    ]
+
+
 def main(argv: list[str], pasta: Path = AQUI) -> int:
+    if argv[:1] == ["--remover"]:
+        if len(argv) != 2:
+            raise SystemExit("Use: python3 novo_cliente.py --remover NOME")
+        comandos = remover(pasta, argv[1])
+        print(f"{argv[1]} saiu da configuração. Para apagar os dados (irreversível):")
+        for comando in comandos:
+            print(f"  {comando}")
+        print("Depois: apague as cópias de backup que estiverem fora do servidor e tire as "
+              "URIs deste cliente dos apps da Amazon e do Mercado Livre.")
+        return 0
     dom = dominio(pasta)
     nome = argv[0] if argv else proximo_nome(pasta)
     if not NOME.fullmatch(nome) or nome == FIXO:

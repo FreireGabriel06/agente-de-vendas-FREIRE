@@ -28,13 +28,12 @@ fixo). Comece com tudo na fila. Bot solto em anúncio novo é a forma mais
 rápida de perder reputação antes de ter feito a primeira venda.
 """
 import json
-import re
 from typing import NamedTuple
 
 from atendimento import claude_api
 from atendimento.persona import persona_padrao, precisa_escalar
 from config import config
-from core import aprovacao, cofre
+from core import aprovacao, cofre, conformidade
 from db import agora, conectar, registrar_evento
 
 # Situações gravadas em perguntas_tratadas.
@@ -67,13 +66,9 @@ def _marcado(texto) -> str:
 
 # Contato fora do marketplace num rascunho: o Mercado Livre proíbe, e é o que
 # uma instrução escondida na pergunta costuma pedir. O rascunho vai para uma
-# pessoa em vez da fila.
-_CONTATO = re.compile(
-    r"https?://|www\.|[\w.+-]+@[\w-]+\.[\w.]+"
-    # Telefone brasileiro (DDD e 8 ou 9 dígitos), não parte de uma sequência
-    # maior: um EAN de 13 dígitos ou um CPF com pontos não caem aqui.
-    r"|(?<!\d)(?:\+?55[\s-]?)?\(?\d{2}\)?[\s-]?9?\d{4}[\s-]?\d{4}(?!\d)",
-    re.IGNORECASE)
+# pessoa em vez da fila. O padrão mora na conformidade, que confere de novo
+# o texto na hora da aprovação (lote S14).
+_CONTATO = conformidade.CONTATO_EXTERNO
 
 
 def problema_no_rascunho(texto: str) -> str | None:

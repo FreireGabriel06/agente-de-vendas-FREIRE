@@ -48,8 +48,7 @@ echo "30 3 * * * root $PWD/rotina_diaria.sh" > /etc/cron.d/agente
 
 Copy `deploy/backups/` off the server from time to time
 (`scp -r root@server:agente/deploy/backups .`). Point an uptime monitor at
-`https://cliente1.example.com/saude` (it answers 503 when something needs
-attention).
+`https://cliente1.example.com/saude` (it answers 503 on a failure).
 
 ## Before the Amazon registration
 
@@ -73,6 +72,19 @@ It writes `instancias/cliente2.env`, `docker-compose.override.yml` and
 operator, start the instance and reload Caddy, and the redirect URIs to add to
 the Amazon and Mercado Livre apps. A wildcard DNS record (`*.example.com`)
 avoids a DNS change per client.
+
+## Ending a client
+
+```bash
+python3 novo_cliente.py --remover cliente2
+```
+
+It removes the client from the configuration and prints the commands that
+delete its container, its volume (database and keys) and its backups on the
+server. Run them, delete any copy of its backups kept elsewhere, and remove its
+redirect URIs from the marketplace apps. The Amazon requires deletion within
+30 days after the client stops using the service; backups are kept for at most
+30 days for the same reason.
 
 ## Updating
 

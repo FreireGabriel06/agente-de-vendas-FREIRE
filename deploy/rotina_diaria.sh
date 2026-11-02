@@ -16,6 +16,11 @@ AQUI=$(cd "$(dirname "$0")" && pwd)
 cd "$AQUI" || exit 2
 DOCKER=${DOCKER:-docker}
 MANTER=${BACKUP_MANTER:-14}
+# One backup a day. At most 30: data the Amazon asks to delete must leave the
+# backups within 30 days too (Data Protection Policy).
+case "$MANTER" in ''|*[!0-9]*) MANTER=14 ;; esac
+[ "$MANTER" -gt 30 ] && MANTER=30
+[ "$MANTER" -lt 1 ] && MANTER=1
 SENHA_ARQUIVO=${BACKUP_SENHA_ARQUIVO:-$AQUI/.backup_senha}
 LOG=${ROTINA_LOG:-$AQUI/rotina.log}
 

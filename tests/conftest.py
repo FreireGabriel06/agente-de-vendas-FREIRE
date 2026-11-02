@@ -317,3 +317,13 @@ def fila_de_compras(nota_fiscal_confirmada):
     assert worker.analisar_novos() == 2
     assert worker.montar_ordens_de_compra() == 2
     return [a.id for a in aprovacao.pendentes()]
+
+
+@pytest.fixture(autouse=True)
+def saude_publica_sem_cache():
+    """A /saude pública guarda o status por alguns segundos (lote S14); cada
+    teste começa sem esse resultado guardado."""
+    from painel import rotas_operacao
+    rotas_operacao._saude_cache.clear()
+    yield
+    rotas_operacao._saude_cache.clear()

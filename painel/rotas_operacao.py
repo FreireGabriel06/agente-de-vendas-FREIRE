@@ -2,6 +2,7 @@
 Rotas da operação: fila de aprovação, pedidos, comprador, preço, nichos,
 LGPD, saúde, eventos e ciclo manual.
 """
+import time
 from decimal import Decimal, InvalidOperation
 
 from fastapi import Query, Request, HTTPException
@@ -215,12 +216,22 @@ def api_expurgar():
     return {"expurgados": privacidade.expurgar()}
 
 
+SAUDE_CACHE_S = 15
+_saude_cache: dict = {}
+
+
 @rotas.get("/saude")
 def saude_publica():
     """Para monitor externo, sem login: só o status (core/saude.py). Falha
-    responde 503, para o monitor alarmar; os detalhes ficam em /api/saude."""
+    responde 503, para o monitor alarmar; os detalhes ficam em /api/saude.
+    Sem login, a rota fica aberta a qualquer um: o resultado vale por
+    SAUDE_CACHE_S segundos, para chamadas em sequência não virarem consultas
+    ao banco e ao disco a cada uma."""
     from core import saude
-    estado = saude.verificar()["status"]
+    agora_s = time.monotonic()
+    if _saude_cache.get("ate", 0) <= agora_s:
+        _saude_cache.update(estado=saude.verificar()["status"], ate=agora_s + SAUDE_CACHE_S)
+    estado = _saude_cache["estado"]
     return JSONResponse({"status": estado}, status_code=503 if estado == "falha" else 200)
 
 
