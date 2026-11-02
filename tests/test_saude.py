@@ -126,6 +126,8 @@ def test_saude_publica_sem_login_so_com_o_status(cliente):
     r = cliente.get("/saude")
     assert r.status_code == 200 and r.json() == {"status": "ok"}
     ciclo_terminado(_ha(hours=2))
+    from painel import rotas_operacao
+    rotas_operacao._saude_cache.clear()  # passados os segundos do cache (lote S14)
     r = cliente.get("/saude")
     assert r.status_code == 503 and r.json() == {"status": "falha"}
 

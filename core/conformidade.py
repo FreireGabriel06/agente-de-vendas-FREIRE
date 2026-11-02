@@ -492,6 +492,50 @@ def _garantia_legal(ctx: dict) -> Violacao | None:
     return None
 
 
+# Link, e-mail ou telefone num texto público: o Mercado Livre proíbe contato
+# fora da plataforma nas perguntas e respostas. O bot já escala o rascunho que
+# traz isso; aqui a regra confere de novo o texto que vai sair, na aprovação.
+CONTATO_EXTERNO = re.compile(
+    r"https?://|www\.|[\w.+-]+@[\w-]+\.[\w.]+"
+    # Telefone brasileiro (DDD e 8 ou 9 dígitos), não parte de uma sequência
+    # maior: um EAN de 13 dígitos ou um CPF com pontos não caem aqui.
+    r"|(?<!\d)(?:\+?55[\s-]?)?\(?\d{2}\)?[\s-]?9?\d{4}[\s-]?\d{4}(?!\d)",
+    re.IGNORECASE)
+
+LIMITE_RESPOSTA_ML = 2000  # caracteres que a API de respostas aceita
+
+
+@_regra("resposta_cliente")
+def _texto_da_resposta(ctx: dict) -> Violacao | None:
+    fonte = "Política de perguntas e respostas do Mercado Livre"
+    texto = ctx.get("texto_resposta")
+    if not isinstance(texto, str) or not texto.strip():
+        return Violacao(
+            regra="RESPOSTA-VAZIA",
+            severidade=Severidade.BLOQUEIO,
+            mensagem="A resposta não tem texto.",
+            saida="Recuse e responda pelo Mercado Livre.",
+            fonte=fonte,
+        )
+    if CONTATO_EXTERNO.search(texto):
+        return Violacao(
+            regra="CONTATO-EXTERNO",
+            severidade=Severidade.BLOQUEIO,
+            mensagem="A resposta traz link, e-mail ou telefone.",
+            saida="Recuse e responda sem contato fora do Mercado Livre.",
+            fonte=fonte,
+        )
+    if len(texto) > LIMITE_RESPOSTA_ML:
+        return Violacao(
+            regra="RESPOSTA-LONGA",
+            severidade=Severidade.BLOQUEIO,
+            mensagem=f"A resposta tem {len(texto)} caracteres; o limite é {LIMITE_RESPOSTA_ML}.",
+            saida="Recuse e responda com um texto mais curto.",
+            fonte=fonte,
+        )
+    return None
+
+
 @_regra("publicar_anuncio", "resposta_cliente")
 def _direito_arrependimento(ctx: dict) -> Violacao | None:
     """CDC art. 49: 7 dias de arrependimento em compra fora do estabelecimento.
@@ -710,6 +754,7 @@ def contexto_da_pendencia(tipo: str, payload: dict) -> dict:
         "garantia_prometida_dias": payload.get("garantia_prometida_dias"),
         "durabilidade": payload.get("durabilidade"),
         "recusa_arrependimento": payload.get("recusa_arrependimento"),
+        "texto_resposta": payload.get("resposta"),
         # Confirmação do vendedor, vale para todas as vendas.
         "emite_nota": config.negocio.emite_nota,
     }

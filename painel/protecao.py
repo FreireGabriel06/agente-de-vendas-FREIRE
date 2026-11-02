@@ -95,11 +95,13 @@ async def host_permitido(request: Request, call_next):
     return await call_next(request)
 
 
-# Script e estilo embutidos continuam valendo (painel.html e o login usam
-# <script> e onclick); a política ainda impede carregar script, imagem ou
-# fetch de outro site, abrir o painel numa moldura, trocar a <base> e mandar
-# formulário para fora. Achado S-09.
-CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; "
+# Script só do próprio painel ou com o nonce desta resposta (lote S14): o
+# <script> do painel.html e do login leva o nonce; onclick e script injetado
+# não rodam. Estilo embutido continua valendo (style="" nos templates). A
+# política também impede carregar script, imagem ou fetch de outro site,
+# abrir o painel numa moldura, trocar a <base> e mandar formulário para fora.
+# Achado S-09.
+CSP = ("default-src 'self'; script-src 'self' 'nonce-{nonce}'; "
        "style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; "
        "font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; "
        "frame-ancestors 'none'")
@@ -113,8 +115,9 @@ async def cabecalhos_de_seguranca(request: Request, call_next):
     sem moldura de outro site, Referer só para a mesma origem (rotas da
     Amazon pedem no-referrer e já o definem), nada em cache (a resposta pode
     ter dado de comprador) e, sob HTTPS, HSTS."""
+    request.state.nonce = secrets.token_urlsafe(18)
     resposta = await call_next(request)
-    resposta.headers.setdefault("Content-Security-Policy", CSP)
+    resposta.headers.setdefault("Content-Security-Policy", CSP.format(nonce=request.state.nonce))
     resposta.headers.setdefault("Cache-Control", "no-store")
     resposta.headers.setdefault("X-Content-Type-Options", "nosniff")
     resposta.headers.setdefault("X-Frame-Options", "DENY")

@@ -13,6 +13,10 @@ services:
   caddy:
     image: caddy:2.8.4
     restart: unless-stopped
+    # Só o que o Caddy precisa: abrir as portas 80 e 443.
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
     ports:
       - "80:80"
       - "443:443"
@@ -33,6 +37,15 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
     restart: unless-stopped
+    # Sem privilégio nenhum, disco da imagem só de leitura (grava só em
+    # /dados e em /tmp, que some ao reiniciar) e limites de memória e de
+    # processos: uma instância com problema não derruba as outras.
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    mem_limit: 768m
+    pids_limit: 256
     env_file: instancias/cliente1.env
     environment:
       # Only Caddy, at this fixed address, may set X-Forwarded-Proto.
