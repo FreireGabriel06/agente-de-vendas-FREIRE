@@ -178,3 +178,28 @@ def test_fim_de_contrato_recusa_o_que_nao_e_cliente_criado(tmp_path, argv):
     nc = _novo_cliente(tmp_path)
     with pytest.raises(SystemExit):
         nc.main(argv, tmp_path)
+
+
+# ------------------------------------------------------ lote S15: servidor
+
+def test_logs_dos_containers_tem_limite():
+    compose = (RAIZ / "deploy" / "docker-compose.yml").read_text(encoding="utf-8")
+    assert compose.count('options: {max-size: "10m", max-file: "3"}') == 2  # caddy e cliente1
+
+
+def test_cliente_novo_nasce_com_log_limitado(tmp_path):
+    nc = _novo_cliente(tmp_path)
+    nc.main([], tmp_path)
+    override = (tmp_path / "docker-compose.override.yml").read_text(encoding="utf-8")
+    assert 'options: {max-size: "10m", max-file: "3"}' in override
+
+
+def test_hsts_do_site_cobre_os_subdominios():
+    caddy = (RAIZ / "deploy" / "Caddyfile").read_text(encoding="utf-8")
+    assert 'Strict-Transport-Security "max-age=31536000; includeSubDomains"' in caddy
+
+
+def test_guia_do_servidor_desliga_senha_no_ssh():
+    guia = (RAIZ / "deploy" / "README.md").read_text(encoding="utf-8")
+    assert "/etc/ssh/sshd_config.d/00-agente.conf" in guia and "PasswordAuthentication no" in guia
+    assert "sshd -t" in guia and "unattended-upgrades" in guia

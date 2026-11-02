@@ -17,6 +17,10 @@ services:
     cap_drop: [ALL]
     cap_add: [NET_BIND_SERVICE]
     security_opt: ["no-new-privileges:true"]
+    # Container logs rotate: without a limit they grow until the disk fills.
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
     ports:
       - "80:80"
       - "443:443"
@@ -46,6 +50,10 @@ services:
     tmpfs: ["/tmp:size=64m,mode=1777"]
     mem_limit: 768m
     pids_limit: 256
+    # Container logs rotate: without a limit they grow until the disk fills.
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
     env_file: instancias/cliente1.env
     environment:
       # Only Caddy, at this fixed address, may set X-Forwarded-Proto.
