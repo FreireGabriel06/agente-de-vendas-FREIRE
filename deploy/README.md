@@ -12,6 +12,20 @@ keys and backups. Tested in CI by building the image and starting it.
 - A domain whose `A` records point to the server: `example.com` and a
   wildcard `*.example.com` (covers `www` and every client).
 
+## Server basics (once)
+
+```bash
+# Only SSH keys, no password logins (keep this session open until a new
+# login with your key works). A file named 00-... wins over the cloud image's
+# own files in sshd_config.d, which may allow passwords.
+printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\nPermitRootLogin prohibit-password\n' > /etc/ssh/sshd_config.d/00-agente.conf
+sshd -t && systemctl reload ssh
+# Firewall: SSH, HTTP and HTTPS only.
+ufw allow 22/tcp && ufw allow 80/tcp && ufw allow 443/tcp && ufw --force enable
+# Security updates install by themselves.
+apt-get install -y unattended-upgrades && dpkg-reconfigure -f noninteractive unattended-upgrades
+```
+
 ## First start
 
 ```bash
